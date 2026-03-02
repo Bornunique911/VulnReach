@@ -1,0 +1,450 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "SBOM/SCA Testing Application",
+    "description": "Flask application with intentionally vulnerable endpoints for security tooling validation in isolated test environments.",
+    "version": "1.1.0"
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8002",
+      "description": "Local development server"
+    }
+  ],
+  "tags": [
+    {
+      "name": "General",
+      "description": "General and health endpoints"
+    },
+    {
+      "name": "YAML",
+      "description": "YAML parsing test endpoints"
+    },
+    {
+      "name": "HTTP",
+      "description": "Outbound HTTP request test endpoints"
+    },
+    {
+      "name": "Template",
+      "description": "Template rendering test endpoints"
+    },
+    {
+      "name": "Serialization",
+      "description": "Deserialization test endpoints"
+    }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "tags": ["General"],
+        "summary": "Home page",
+        "description": "Returns an HTML landing page listing all test endpoints.",
+        "operationId": "home",
+        "responses": {
+          "200": {
+            "description": "HTML page",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": ["General"],
+        "summary": "Health check",
+        "description": "Returns service health status.",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "Service health",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                },
+                "example": {
+                  "status": "running",
+                  "message": "SBOM/SCA test application is running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yaml-test": {
+      "get": {
+        "tags": ["YAML"],
+        "summary": "Safe YAML parse test",
+        "description": "Parses hard-coded YAML using yaml.safe_load.",
+        "operationId": "yamlTest",
+        "responses": {
+          "200": {
+            "description": "Parsed YAML or error object",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/YamlTestResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    }
+                  ]
+                },
+                "examples": {
+                  "success": {
+                    "value": {
+                      "config": {
+                        "name": "test",
+                        "version": 1.0
+                      }
+                    }
+                  },
+                  "error": {
+                    "value": {
+                      "error": "example parse error"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yaml-unsafe": {
+      "get": {
+        "tags": ["YAML"],
+        "summary": "Unsafe YAML load",
+        "description": "Loads user-supplied YAML using yaml.load with yaml.Loader.",
+        "operationId": "yamlUnsafe",
+        "parameters": [
+          {
+            "name": "data",
+            "in": "query",
+            "required": false,
+            "description": "YAML payload to parse.",
+            "schema": {
+              "type": "string",
+              "default": "key: value"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Parsed YAML value or error object",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/AnyJson"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    }
+                  ]
+                },
+                "examples": {
+                  "success": {
+                    "value": {
+                      "key": "value"
+                    }
+                  },
+                  "error": {
+                    "value": {
+                      "error": "example yaml load error"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/request-test": {
+      "get": {
+        "tags": ["HTTP"],
+        "summary": "Outbound request test",
+        "description": "Performs an outbound GET to a fixed URL and returns status.",
+        "operationId": "requestTest",
+        "responses": {
+          "200": {
+            "description": "Request status or error object",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/RequestTestResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    }
+                  ]
+                },
+                "examples": {
+                  "success": {
+                    "value": {
+                      "status_code": 200,
+                      "message": "External request successful"
+                    }
+                  },
+                  "error": {
+                    "value": {
+                      "error": "example request error"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ssrf": {
+      "get": {
+        "tags": ["HTTP"],
+        "summary": "User-controlled request",
+        "description": "Performs an outbound GET to a user-supplied URL.",
+        "operationId": "ssrf",
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "required": false,
+            "description": "Target URL for outbound request.",
+            "schema": {
+              "type": "string",
+              "format": "uri",
+              "default": "https://httpbin.org/get"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Request status or error object",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/StatusCodeResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    }
+                  ]
+                },
+                "examples": {
+                  "success": {
+                    "value": {
+                      "status_code": 200
+                    }
+                  },
+                  "error": {
+                    "value": {
+                      "error": "example request error"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/render-test": {
+      "get": {
+        "tags": ["Template"],
+        "summary": "Template render test",
+        "description": "Renders an HTML fragment using user-provided name.",
+        "operationId": "renderTest",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": false,
+            "description": "Name inserted into the rendered template.",
+            "schema": {
+              "type": "string",
+              "default": "world"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rendered HTML output",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "<h1>Hello, world!</h1>"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/deserialize": {
+      "get": {
+        "tags": ["Serialization"],
+        "summary": "Deserialize payload",
+        "description": "Decodes base64 payload and deserializes using pickle.loads.",
+        "operationId": "deserialize",
+        "parameters": [
+          {
+            "name": "data",
+            "in": "query",
+            "required": false,
+            "description": "Base64-encoded pickle bytes.",
+            "schema": {
+              "type": "string",
+              "default": ""
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deserialization result or error object",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/DeserializeResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    }
+                  ]
+                },
+                "examples": {
+                  "success": {
+                    "value": {
+                      "result": "example-object"
+                    }
+                  },
+                  "error": {
+                    "value": {
+                      "error": "example decode or pickle error"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AnyJson": {
+        "description": "Any valid JSON value.",
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": true
+          },
+          {
+            "type": "array",
+            "items": {}
+          },
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "integer"
+          },
+          {
+            "type": "boolean"
+          }
+        ],
+        "nullable": true
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "required": ["status", "message"],
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "YamlTestResponse": {
+        "type": "object",
+        "required": ["config"],
+        "properties": {
+          "config": {
+            "type": "object",
+            "required": ["name", "version"],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      },
+      "RequestTestResponse": {
+        "type": "object",
+        "required": ["status_code", "message"],
+        "properties": {
+          "status_code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "StatusCodeResponse": {
+        "type": "object",
+        "required": ["status_code"],
+        "properties": {
+          "status_code": {
+            "type": "integer"
+          }
+        }
+      },
+      "DeserializeResponse": {
+        "type": "object",
+        "required": ["result"],
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

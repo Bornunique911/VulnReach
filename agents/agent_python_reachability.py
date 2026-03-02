@@ -1,0 +1,150 @@
+import json
+import io
+import re
+from contextlib import redirect_stdout
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from correlation.engine import reachability_verdict
+from core.agent import BaseTool
+from core.models import AgentResult, ReachabilityFinding, ScanContext
+from .utils.python_reachability_analyzer import PythonReachabilityAnalyzer
+
+class PythonReachabilityAgent(BaseTool):
+    tool_name = "python_reachability"
+
+    def __init__(self, timeout_seconds: int = 300) -> None:
+        self.timeout_seconds = timeout_seconds
+
+    async def run(self, context: ScanContext) -> AgentResult:  # type: ignore[override]
+        if not context.repo_path:
+            return AgentResult(tool_name=self.tool_name, findings=[], metadata={"error": "missing_repo_path"})
+
+        repo_path = Path(context.repo_path).resolve()
+        if not repo_path.exists():
+            return AgentResult(
+                tool_name=self.tool_name,
+                findings=[],
+                metadata={"error": "repo_path_not_found", "repo_path": str(repo_path)},
+            )
+
+        vuln_inputs = self._build_vuln_inputs(context.vulnerabilities)
+        if not vuln_inputs:
+            return AgentResult(tool_name=self.tool_name, findings=[], metadata={"status": "no_vulns"})
+
+        stdout_buf = io.StringIO()
+        try:
+            with redirect_stdout(stdout_buf):
+                analyzer = PythonReachabilityAnalyzer(str(repo_path))
+                analyses = analyzer.analyze_vulnerability_reachability(vuln_inputs)
+                report = analyzer.generate_report(analyses)
+        except Exception as exc:  # pragma: no cover
+            return AgentResult(
+                tool_name=self.tool_name,
+                findings=[],
+                metadata={"error": "python_reachability_failed", "details": str(exc)},
+            )
+
+        finding_map = self._map_findings(analyses, vuln_inputs)
+        findings = [ReachabilityFinding.model_validate(f).model_dump() for f in finding_map]
+        metadata = {
+            "status": "ok",
+            "finding_count": len(findings),
+            "raw": report,
+            "logs": stdout_buf.getvalue(),
+        }
+        return AgentResult.model_validate({"tool_name": self.tool_name, "findings": findings, "metadata": metadata})
+
+    def _build_vuln_inputs(self, vulns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        inputs: List[Dict[str, Any]] = []
+        for vuln in vulns:
+            pkg = vuln.get("package")
+            if not pkg:
+                continue
+            cves = vuln.get("cve_id")
+            cve_list = cves if isinstance(cves, list) else [cves] if cves else []
+            inputs.append(
+                {
+                    "package_name": pkg,
+                    "package_version": vuln.get("version"),
+                    "installed_version": vuln.get("version"),
+                    "recommended_fixed_version": vuln.get("fix_version"),
+                    "cve_ids": cve_list,
+                }
+            )
+        return inputs
+
+    def _map_findings(self, analyses: List[Any], vuln_inputs: List[Dict[str, Any]]):
+        # Map package -> cve_ids from inputs
+        pkg_cves: Dict[str, List[str]] = {}
+        for inp in vuln_inputs:
+            pkg = inp.get("package_name")
+            if not pkg:
+                continue
+            pkg_cves.setdefault(pkg, []).extend(inp.get("cve_ids", []))
+
+        mapped: List[Dict[str, Any]] = []
+        for analysis in analyses:
+            cves = pkg_cves.get(analysis.package_name, [None]) or [None]
+            verdict = self._verdict_from_analysis(analysis)
+            confidence = self._confidence_from_verdict(verdict)
+            files = list(dict.fromkeys(ctx.file_path for ctx in analysis.usage_contexts))
+            functions = self._extract_functions(analysis)
+            for cve in cves:
+                mapped.append(
+                    {
+                        "cve_id": cve,
+                        "package": analysis.package_name,
+                        "import_detected": analysis.is_used,
+                        "call_chain_exists": bool(analysis.call_chain_graph),
+                        "sink_reachable": bool(analysis.call_chain_graph),
+                        "verdict": verdict,
+                        "confidence": confidence,
+                        "evidence_type": "static",
+                        "files": files,
+                        "function": ", ".join(functions) if functions else None,
+                    }
+                )
+        return mapped
+
+    def _extract_functions(self, analysis: Any) -> List[str]:
+        """Extract enclosing function names from usage contexts with fallbacks."""
+        # Strategy 1: function_call or attribute_access contexts with enclosing_function
+        functions = list(dict.fromkeys(
+            ctx.enclosing_function for ctx in analysis.usage_contexts
+            if ctx.enclosing_function and ctx.usage_type in ("function_call", "attribute_access")
+        ))
+        if functions:
+            return functions
+
+        # Strategy 2: any context with enclosing_function
+        functions = list(dict.fromkeys(
+            ctx.enclosing_function for ctx in analysis.usage_contexts
+            if ctx.enclosing_function
+        ))
+        if functions:
+            return functions
+
+        # Strategy 3: parse call_chain_graph mermaid for function names
+        if analysis.call_chain_graph:
+            # Mermaid format: "graph TD;\n    request_test;\n    home;\n    ..."
+            names = re.findall(r'^\s+(\w+);', analysis.call_chain_graph, re.MULTILINE)
+            # Filter out mermaid keywords
+            skip = {"graph", "TD", "LR", "classDef", "class", "subgraph", "end", "style"}
+            functions = [n for n in names if n not in skip]
+            if functions:
+                return list(dict.fromkeys(functions))
+
+        return []
+
+    def _confidence_from_verdict(self, verdict: str) -> float:
+        from correlation.engine import confidence_from_verdict
+        return confidence_from_verdict(verdict)
+
+    def _verdict_from_analysis(self, analysis: Any) -> str:
+        if analysis.is_used and analysis.call_chain_graph:
+            return reachability_verdict(True, True, True)
+        if analysis.is_used:
+            return reachability_verdict(True, True, False)
+        return reachability_verdict(False, False, False)
+

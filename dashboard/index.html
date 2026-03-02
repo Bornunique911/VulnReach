@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VulnReach v2 — Reachability Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <div class="logo">
+      <div class="logo-icon">VR</div>
+      Vuln<span>Reach</span>&nbsp;<span style="color:var(--text-mute);font-weight:400;font-size:0.85rem">v2</span>
+    </div>
+    <div class="topbar-right">
+      <div class="status-dot"><div class="dot"></div><span id="api-status">API connected</span></div>
+      <button class="btn-auth" onclick="showAuthInfo()">⚿ Sign in (Google SSO)</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- Sidebar -->
+    <nav class="sidebar">
+      <div class="nav-section">
+        <div class="nav-label">Analysis</div>
+        <div class="nav-item active" onclick="setPage('scans')">
+          <span class="nav-icon">⬡</span> Scans
+          <span class="badge" id="nav-count">—</span>
+        </div>
+        <div class="nav-item" onclick="setPage('new')">
+          <span class="nav-icon">+</span> New Scan
+        </div>
+        <div class="nav-item" onclick="setPage('findings')">
+          <span class="nav-icon">◈</span> Findings
+        </div>
+      </div>
+      <div class="nav-section">
+        <div class="nav-label">Platform</div>
+        <div class="nav-item" onclick="setPage('tools')">
+          <span class="nav-icon">◧</span> Tools
+        </div>
+        <div class="nav-item" onclick="setPage('api')">
+          <span class="nav-icon">⌥</span> API Access
+        </div>
+        <div class="nav-item" onclick="setPage('settings')">
+          <span class="nav-icon">◎</span> Settings
+        </div>
+      </div>
+      <div class="nav-section" style="margin-top:auto">
+        <div class="nav-label">Endpoints</div>
+        <div style="padding:0 0.5rem">
+          <div style="font-size:0.68rem;color:var(--text-mute);line-height:1.8">
+            <div><span style="color:var(--green)">POST</span> /scan</div>
+            <div><span style="color:var(--blue)">GET</span>  /scan/{id}</div>
+            <div><span style="color:var(--blue)">GET</span>  /scans</div>
+            <div><span style="color:var(--blue)">GET</span>  /health</div>
+            <div><span style="color:var(--blue)">GET</span>  /tools</div>
+          </div>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Main content -->
+    <main class="main" id="main-content">
+
+      <!-- Auth notice -->
+      <div class="auth-banner">
+        ⚠ Auth is not yet enabled. <a onclick="showAuthInfo()">Google SSO + API key auth is planned</a> — all endpoints are currently open.
+      </div>
+
+      <!-- Page: Scans -->
+      <div id="page-scans">
+        <div class="page-header">
+          <div>
+            <div class="page-title">Scan History</div>
+            <div class="page-subtitle">All reachability scans — click any row to inspect results</div>
+          </div>
+          <button class="btn-primary" onclick="setPage('new')">+ New Scan</button>
+        </div>
+
+        <!-- Stats -->
+        <div class="stat-grid">
+          <div class="stat-card green">
+            <div class="stat-label">Repositories</div>
+            <div class="stat-value" id="stat-total">—</div>
+            <div class="stat-sub">tracked</div>
+          </div>
+          <div class="stat-card red">
+            <div class="stat-label">Confirmed</div>
+            <div class="stat-value" id="stat-confirmed">—</div>
+            <div class="stat-sub">reachable vulns</div>
+          </div>
+          <div class="stat-card amber">
+            <div class="stat-label">Likely</div>
+            <div class="stat-value" id="stat-likely">—</div>
+            <div class="stat-sub">probable risk</div>
+          </div>
+          <div class="stat-card blue">
+            <div class="stat-label">Running</div>
+            <div class="stat-value" id="stat-running">—</div>
+            <div class="stat-sub">active scans</div>
+          </div>
+        </div>
+
+        <!-- Table -->
+        <div class="section-header">
+          <div class="section-title">Recent Scans</div>
+          <button class="btn-secondary" onclick="loadScans()">↺ Refresh</button>
+        </div>
+
+        <div class="table-card">
+          <div class="table-header">
+            <div>Repository</div>
+            <div>Path / URL</div>
+            <div>Scans</div>
+            <div>Latest Status</div>
+            <div>Last Scan</div>
+            <div></div>
+          </div>
+          <div id="scans-body">
+            <div class="empty-state">
+              <div class="spinner" style="margin:0 auto 1rem"></div>
+              <div class="empty-text">Loading scans…</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Page: Repo drilldown -->
+      <div id="page-repo" style="display:none">
+        <div class="page-header">
+          <div>
+            <div style="display:flex;align-items:center;gap:0.75rem">
+              <button class="btn-secondary" onclick="setPage('scans')" style="padding:0.3rem 0.7rem;font-size:0.75rem">← All Repos</button>
+              <div class="page-title" id="repo-page-title">—</div>
+            </div>
+            <div class="page-subtitle" id="repo-page-subtitle" style="margin-top:0.25rem;font-size:0.7rem;word-break:break-all"></div>
+          </div>
+          <button class="btn-primary" onclick="setPage('new')">+ New Scan</button>
+        </div>
+
+        <div class="table-card">
+          <div class="table-header">
+            <div>Scan ID</div>
+            <div>Status</div>
+            <div>Started</div>
+            <div>Findings</div>
+            <div>Tools</div>
+            <div></div>
+          </div>
+          <div id="repo-scans-body"></div>
+        </div>
+      </div>
+
+      <!-- Page: New Scan -->
+      <div id="page-new" style="display:none">
+        <div class="page-header">
+          <div>
+            <div class="page-title">New Scan</div>
+            <div class="page-subtitle">Configure and launch a reachability scan</div>
+          </div>
+        </div>
+
+        <div class="scan-form-card">
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">Repository Path (local)</label>
+              <input class="form-input" id="f-repo-path" placeholder="/home/user/myapp" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Repository URL (remote)</label>
+              <input class="form-input" id="f-repo-url" placeholder="https://github.com/org/repo" />
+            </div>
+            <div class="form-group full">
+              <label class="form-label">Config Path</label>
+              <input class="form-input" id="f-config-path" placeholder="/home/user/myapp/vulnreach.yaml" />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Tools</label>
+            <div class="tools-grid" id="tool-chips"></div>
+          </div>
+
+          <div class="form-actions">
+            <button class="btn-primary" id="launch-btn" onclick="launchScan()">
+              ▶ Launch Scan
+            </button>
+            <button class="btn-secondary" onclick="resetForm()">Reset</button>
+            <div class="form-hint" id="form-hint"></div>
+          </div>
+
+          <div id="launch-progress" style="display:none">
+            <div class="progress-bar-wrap"><div class="progress-bar" id="progress-fill" style="width:0%"></div></div>
+            <div style="font-size:0.7rem;color:var(--text-dim);margin-top:0.4rem" id="progress-label">Initialising…</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Page: Tools -->
+      <div id="page-tools" style="display:none">
+        <div class="page-header">
+          <div>
+            <div class="page-title">Available Tools</div>
+            <div class="page-subtitle">Security analysis tools registered with VulnReach</div>
+          </div>
+        </div>
+        <div id="tools-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem"></div>
+      </div>
+
+      <!-- Page: API -->
+      <div id="page-api" style="display:none">
+        <div class="page-header">
+          <div>
+            <div class="page-title">API Access</div>
+            <div class="page-subtitle">Authentication options for programmatic access</div>
+          </div>
+        </div>
+        <div class="scan-form-card">
+          <div style="font-size:0.85rem;line-height:1.8;color:var(--text-dim)">
+            <p style="color:var(--text);font-family:var(--sans);font-size:1rem;font-weight:600;margin-bottom:0.75rem">Planned Auth Strategy</p>
+            <p style="margin-bottom:1rem">VulnReach v2 will support two authentication modes:</p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem">
+              <div style="border:1px solid var(--border);border-radius:6px;padding:1rem">
+                <div style="color:var(--green);font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem">Browser / Human Access</div>
+                <div style="color:var(--text);font-weight:600;margin-bottom:0.4rem">Google SSO (OAuth 2.0)</div>
+                <div style="font-size:0.75rem">Sign in with your Google workspace account. Session tokens stored in HttpOnly cookies. Refresh tokens handled server-side.</div>
+              </div>
+              <div style="border:1px solid var(--border);border-radius:6px;padding:1rem">
+                <div style="color:var(--blue);font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem">API / Machine Access</div>
+                <div style="color:var(--text);font-weight:600;margin-bottom:0.4rem">API Keys or JWT Bearer tokens</div>
+                <div style="font-size:0.75rem">Long-lived API keys for CI/CD pipelines. Short-lived JWT bearer tokens for service-to-service. Scopes: <code style="color:var(--green)">scan:write</code> <code style="color:var(--green)">scan:read</code>.</div>
+              </div>
+            </div>
+            <div style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1rem;font-family:var(--mono);font-size:0.75rem;color:var(--text-dim)">
+              <div style="color:var(--text-mute);margin-bottom:0.4rem"># Example API key usage</div>
+              <div>curl -H <span style="color:var(--green)">"Authorization: Bearer &lt;API_KEY&gt;"</span> \</div>
+              <div>&nbsp;&nbsp;&nbsp;&nbsp; -X POST https://vulnreach.internal/scan \</div>
+              <div>&nbsp;&nbsp;&nbsp;&nbsp; -d '{"repo_path":"/app","config_path":"/app/vulnreach.yaml"}'</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Page: Findings -->
+      <div id="page-findings" style="display:none">
+        <div class="page-header">
+          <div>
+            <div class="page-title">Findings</div>
+            <div class="page-subtitle">Cross-scan reachability findings — select a scan below</div>
+          </div>
+        </div>
+        <div class="empty-state">
+          <div class="empty-icon">◈</div>
+          <div class="empty-text">Select a scan from Scan History to view findings</div>
+          <div class="empty-sub">Or use the Scans page and click a row</div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+
+<!-- Scan detail panel -->
+<div class="panel-overlay" id="panel-overlay" onclick="closePanel()"></div>
+<div class="detail-panel" id="detail-panel">
+  <div class="panel-header">
+    <div class="panel-title" id="panel-title">Scan Detail</div>
+    <button class="panel-close" onclick="closePanel()">✕</button>
+  </div>
+  <div class="panel-body">
+    <div class="tab-bar">
+      <div class="tab-item active" onclick="setTab('overview',this)">Overview</div>
+      <div class="tab-item" onclick="setTab('findings',this)">Findings</div>
+      <div class="tab-item" onclick="setTab('raw',this)">Raw JSON</div>
+    </div>
+    <div id="tab-overview"></div>
+    <div id="tab-findings" style="display:none"></div>
+    <div id="tab-raw" style="display:none"></div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toasts"></div>
+
+<script src="dashboard.js"></script>
+</body>
+</html>

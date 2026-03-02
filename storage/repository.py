@@ -1,0 +1,553 @@
+import os
+import uuid
+import logging
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List, Optional
+from contextlib import contextmanager
+
+try:
+    import psycopg2
+    from psycopg2.pool import ThreadedConnectionPool
+    from psycopg2.extras import Json, RealDictCursor
+except ImportError:  # pragma: no cover - handled at runtime
+    psycopg2 = None
+    ThreadedConnectionPool = None
+    Json = None
+    RealDictCursor = None
+
+
+class StorageRepository(ABC):
+    @abstractmethod
+    def create_scan(self, status: str = "started", metadata: Optional[Dict[str, Any]] = None) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_scan_status(self, scan_id: str, status: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def store_vulnerabilities(self, scan_id: str, vulns: List[Dict[str, Any]]) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def store_reachability(self, scan_id: str, evidence: List[Dict[str, Any]]) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def store_correlation(self, scan_id: str, results: List[Dict[str, Any]]) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def store_raw_output(self, scan_id: str, tool_name: str, payload: Dict[str, Any]) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def store_semgrep_findings(self, scan_id: str, findings: List[Dict[str, Any]]) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def store_routes(self, scan_id: str, findings: List[Dict[str, Any]]) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_scan(self, scan_id: str) -> Optional[Dict[str, Any]]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_scans(self) -> List[Dict[str, Any]]:
+        raise NotImplementedError
+
+
+class PostgresRepository(StorageRepository):
+    def __init__(self, dsn: Optional[str] = None) -> None:
+        if psycopg2 is None:
+            raise ImportError("psycopg2 is required for PostgresRepository; install psycopg2-binary")
+        self.dsn = dsn or os.getenv("DATABASE_URL")
+        if not self.dsn:
+            raise ValueError("DATABASE_URL is required for PostgresRepository")
+        self.logger = logging.getLogger(__name__)
+        self.pool = ThreadedConnectionPool(
+            minconn=int(os.getenv("DB_MIN_CONN", "1")),
+            maxconn=int(os.getenv("DB_MAX_CONN", "5")),
+            dsn=self.dsn,
+        )
+        self._ensure_schema()
+
+    @contextmanager
+    def _conn(self):
+        conn = self.pool.getconn()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self.pool.putconn(conn)
+
+    def _ensure_schema(self) -> None:
+        ddl = """
+        CREATE TABLE IF NOT EXISTS scans (
+            id UUID PRIMARY KEY,
+            status TEXT NOT NULL,
+            metadata JSONB DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS vulnerabilities (
+            id SERIAL PRIMARY KEY,
+            scan_id UUID REFERENCES scans(id) ON DELETE CASCADE,
+            package TEXT,
+            cve_id JSONB DEFAULT '[]'::jsonb,
+            severity TEXT,
+            version TEXT,
+            fix_version TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS reachability_evidence (
+            id SERIAL PRIMARY KEY,
+            scan_id UUID REFERENCES scans(id) ON DELETE CASCADE,
+            cve_id TEXT,
+            package TEXT,
+            import_detected BOOLEAN,
+            call_chain_exists BOOLEAN,
+            sink_reachable BOOLEAN,
+            verdict TEXT,
+            file TEXT,
+            function TEXT,
+            sink TEXT,
+            confidence NUMERIC DEFAULT 0.1,
+            evidence_type TEXT,
+            files JSONB DEFAULT '[]'::jsonb
+        );
+
+        CREATE TABLE IF NOT EXISTS correlation_results (
+            id SERIAL PRIMARY KEY,
+            scan_id UUID REFERENCES scans(id) ON DELETE CASCADE,
+            cve_id TEXT,
+            check_id TEXT,
+            verdict TEXT,
+            risk_score NUMERIC,
+            priority TEXT,
+            confidence NUMERIC DEFAULT 0.1,
+            finding_type TEXT,
+            evidence JSONB DEFAULT '{}'::jsonb,
+            evidence_type TEXT  -- legacy column kept for old rows
+        );
+
+        CREATE TABLE IF NOT EXISTS raw_outputs (
+            id SERIAL PRIMARY KEY,
+            scan_id UUID REFERENCES scans(id) ON DELETE CASCADE,
+            tool_name TEXT,
+            payload JSONB,
+            UNIQUE (scan_id, tool_name)
+        );
+
+        CREATE TABLE IF NOT EXISTS semgrep_findings (
+            id SERIAL PRIMARY KEY,
+            scan_id UUID REFERENCES scans(id) ON DELETE CASCADE,
+            check_id TEXT,
+            path TEXT,
+            start JSONB,
+            finish JSONB,
+            severity TEXT,
+            extra JSONB
+        );
+
+        CREATE TABLE IF NOT EXISTS routes_extracted (
+            id SERIAL PRIMARY KEY,
+            scan_id UUID REFERENCES scans(id) ON DELETE CASCADE,
+            method TEXT,
+            path TEXT,
+            handler TEXT,
+            file TEXT,
+            framework TEXT,
+            prefix TEXT
+        );
+        """
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(ddl)
+        self._run_migrations()
+
+    def _run_migrations(self) -> None:
+        """Apply schema migrations for existing databases."""
+        migrations = [
+            # Migrate vulnerabilities.cve_id from TEXT to JSONB
+            """
+            DO $$ BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='vulnerabilities' AND column_name='cve_id' AND data_type='text'
+                ) THEN
+                    ALTER TABLE vulnerabilities ALTER COLUMN cve_id TYPE JSONB USING
+                        CASE
+                            WHEN cve_id IS NULL THEN '[]'::jsonb
+                            WHEN cve_id LIKE '{%' THEN to_jsonb(string_to_array(trim(both '{}' from cve_id), ','))
+                            ELSE jsonb_build_array(cve_id)
+                        END;
+                    ALTER TABLE vulnerabilities ALTER COLUMN cve_id SET DEFAULT '[]'::jsonb;
+                END IF;
+            END $$;
+            """,
+            # Add evidence_type to reachability_evidence
+            """
+            DO $$ BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='reachability_evidence' AND column_name='evidence_type'
+                ) THEN
+                    ALTER TABLE reachability_evidence ADD COLUMN evidence_type TEXT;
+                END IF;
+            END $$;
+            """,
+            # Add files JSONB to reachability_evidence
+            """
+            DO $$ BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='reachability_evidence' AND column_name='files'
+                ) THEN
+                    ALTER TABLE reachability_evidence ADD COLUMN files JSONB DEFAULT '[]'::jsonb;
+                END IF;
+            END $$;
+            """,
+            # Migrate reachability_evidence.confidence from TEXT to NUMERIC
+            """
+            DO $$ BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='reachability_evidence' AND column_name='confidence' AND data_type='text'
+                ) THEN
+                    ALTER TABLE reachability_evidence ALTER COLUMN confidence TYPE NUMERIC USING
+                        CASE WHEN confidence ~ '^[0-9.]+$' THEN confidence::NUMERIC ELSE 0.1 END;
+                    ALTER TABLE reachability_evidence ALTER COLUMN confidence SET DEFAULT 0.1;
+                END IF;
+            END $$;
+            """,
+            # Add confidence to correlation_results
+            """
+            DO $$ BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='correlation_results' AND column_name='confidence'
+                ) THEN
+                    ALTER TABLE correlation_results ADD COLUMN confidence NUMERIC DEFAULT 0.1;
+                END IF;
+            END $$;
+            """,
+            # Add evidence_type to correlation_results
+            """
+            DO $$ BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='correlation_results' AND column_name='evidence_type'
+                ) THEN
+                    ALTER TABLE correlation_results ADD COLUMN evidence_type TEXT;
+                END IF;
+            END $$;
+            """,
+            # Add finding_type to correlation_results (replaces evidence_type)
+            """
+            DO $$ BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='correlation_results' AND column_name='finding_type'
+                ) THEN
+                    ALTER TABLE correlation_results ADD COLUMN finding_type TEXT;
+                END IF;
+            END $$;
+            """,
+            # Add evidence JSONB to correlation_results
+            """
+            DO $$ BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='correlation_results' AND column_name='evidence'
+                ) THEN
+                    ALTER TABLE correlation_results ADD COLUMN evidence JSONB DEFAULT '{}'::jsonb;
+                END IF;
+            END $$;
+            """,
+            # Add check_id to correlation_results (for semgrep findings)
+            """
+            DO $$ BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='correlation_results' AND column_name='check_id'
+                ) THEN
+                    ALTER TABLE correlation_results ADD COLUMN check_id TEXT;
+                END IF;
+            END $$;
+            """,
+        ]
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                for migration in migrations:
+                    try:
+                        cur.execute(migration)
+                    except Exception as e:
+                        self.logger.warning(f"Migration skipped: {e}")
+
+    def create_scan(self, status: str = "started", metadata: Optional[Dict[str, Any]] = None) -> str:
+        scan_id = str(uuid.uuid4())
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "INSERT INTO scans (id, status, metadata) VALUES (%s, %s, %s)",
+                    (scan_id, status, Json(metadata or {})),
+                )
+        return scan_id
+
+    def update_scan_status(self, scan_id: str, status: str) -> None:
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("UPDATE scans SET status=%s WHERE id=%s", (status, scan_id))
+
+    def store_vulnerabilities(self, scan_id: str, vulns: List[Dict[str, Any]]) -> None:
+        if not vulns:
+            return
+        rows = [
+            (
+                scan_id,
+                vuln.get("package"),
+                Json(vuln.get("cve_id") if isinstance(vuln.get("cve_id"), list) else [vuln.get("cve_id")] if vuln.get("cve_id") else []),
+                vuln.get("severity"),
+                vuln.get("version"),
+                vuln.get("fix_version"),
+            )
+            for vuln in vulns
+        ]
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO vulnerabilities (scan_id, package, cve_id, severity, version, fix_version)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    rows,
+                )
+
+    def store_reachability(self, scan_id: str, evidence: List[Dict[str, Any]]) -> None:
+        if not evidence:
+            return
+        rows = []
+        for item in evidence:
+            files_list = item.get("files") or []
+            first_file = files_list[0] if files_list else None
+            rows.append(
+                (
+                    scan_id,
+                    item.get("cve_id"),
+                    item.get("package"),
+                    item.get("import_detected"),
+                    item.get("call_chain_exists"),
+                    item.get("sink_reachable"),
+                    item.get("verdict"),
+                    first_file,
+                    item.get("function"),
+                    item.get("sink"),
+                    item.get("confidence", 0.1),
+                    item.get("evidence_type"),
+                    Json(files_list),
+                )
+            )
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO reachability_evidence
+                    (scan_id, cve_id, package, import_detected, call_chain_exists, sink_reachable, verdict, file, function, sink, confidence, evidence_type, files)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    rows,
+                )
+
+    def store_correlation(self, scan_id: str, results: List[Dict[str, Any]]) -> None:
+        if not results:
+            return
+        rows = [
+            (
+                scan_id,
+                item.get("cve_id"),
+                item.get("check_id"),
+                item.get("verdict"),
+                item.get("risk_score"),
+                item.get("priority"),
+                item.get("confidence", 0.1),
+                item.get("finding_type") or item.get("evidence_type"),  # prefer new field
+                Json(item.get("evidence") or {}),
+            )
+            for item in results
+        ]
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO correlation_results
+                        (scan_id, cve_id, check_id, verdict, risk_score, priority, confidence, finding_type, evidence)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    rows,
+                )
+
+    def store_raw_output(self, scan_id: str, tool_name: str, payload: Dict[str, Any]) -> None:
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    INSERT INTO raw_outputs (scan_id, tool_name, payload)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (scan_id, tool_name) DO UPDATE SET payload=excluded.payload
+                    """,
+                    (scan_id, tool_name, Json(payload)),
+                )
+
+    def store_semgrep_findings(self, scan_id: str, findings: List[Dict[str, Any]]) -> None:
+        if not findings:
+            return
+        rows = [
+            (
+                scan_id,
+                item.get("check_id"),
+                item.get("path"),
+                item.get("start"),
+                item.get("end"),
+                item.get("severity"),
+                item.get("extra"),
+            )
+            for item in findings
+        ]
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO semgrep_findings (scan_id, check_id, path, start, finish, severity, extra)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    rows,
+                )
+
+    def store_routes(self, scan_id: str, findings: List[Dict[str, Any]]) -> None:
+        if not findings:
+            return
+        rows = [
+            (
+                scan_id,
+                item.get("method"),
+                item.get("path"),
+                item.get("handler"),
+                item.get("file"),
+                item.get("framework"),
+                item.get("prefix"),
+            )
+            for item in findings
+        ]
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO routes_extracted (scan_id, method, path, handler, file, framework, prefix)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    rows,
+                )
+
+    def get_scan(self, scan_id: str) -> Optional[Dict[str, Any]]:
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT id, status, metadata, created_at FROM scans WHERE id=%s", (scan_id,))
+                scan_row = cur.fetchone()
+                if not scan_row:
+                    return None
+
+                cur.execute(
+                    "SELECT package, cve_id, severity, version, fix_version FROM vulnerabilities WHERE scan_id=%s",
+                    (scan_id,),
+                )
+                vulns = cur.fetchall() or []
+
+                cur.execute(
+                    """
+                    SELECT cve_id, package, import_detected, call_chain_exists, sink_reachable, verdict, file, function, sink, confidence, evidence_type, files
+                    FROM reachability_evidence WHERE scan_id=%s
+                    """,
+                    (scan_id,),
+                )
+                reachability = cur.fetchall() or []
+
+                cur.execute(
+                    "SELECT cve_id, check_id, verdict, risk_score, priority, confidence, finding_type, evidence FROM correlation_results WHERE scan_id=%s",
+                    (scan_id,),
+                )
+                correlation = cur.fetchall() or []
+
+                cur.execute("SELECT tool_name, payload FROM raw_outputs WHERE scan_id=%s", (scan_id,))
+                raw_rows = cur.fetchall() or []
+                raw = {row["tool_name"]: row["payload"] for row in raw_rows}
+
+                cur.execute(
+                    "SELECT check_id, path, start, finish, severity, extra FROM semgrep_findings WHERE scan_id=%s",
+                    (scan_id,),
+                )
+                semgrep = cur.fetchall() or []
+
+                cur.execute(
+                    "SELECT method, path, handler, file, framework, prefix FROM routes_extracted WHERE scan_id=%s",
+                    (scan_id,),
+                )
+                routes = cur.fetchall() or []
+
+                return {
+                    "scan_id": scan_row["id"],
+                    "status": scan_row["status"],
+                    "metadata": scan_row.get("metadata") if isinstance(scan_row, dict) else scan_row[2],
+                    "created_at": scan_row.get("created_at") if isinstance(scan_row, dict) else scan_row[3],
+                    "vulnerabilities": vulns,
+                    "reachability": reachability,
+                    "correlation": [self._convert_correlation(row) for row in correlation],
+                    "raw": raw,
+                    "semgrep_findings": semgrep,
+                    "routes": routes,
+                }
+
+    def list_scans(self) -> List[Dict[str, Any]]:
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT id, status, metadata, created_at FROM scans ORDER BY created_at DESC")
+                rows = cur.fetchall() or []
+                return [
+                    {
+                        "scan_id": row["id"],
+                        "status": row["status"],
+                        "metadata": row.get("metadata") if isinstance(row, dict) else row[2],
+                        "created_at": row.get("created_at") if isinstance(row, dict) else row[3],
+                    }
+                    for row in rows
+                ]
+
+    def _convert_correlation(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        risk_score = row.get("risk_score")
+        if risk_score is not None:
+            try:
+                risk_score = float(risk_score)
+            except (TypeError, ValueError):
+                pass
+        confidence = row.get("confidence")
+        if confidence is not None:
+            try:
+                confidence = float(confidence)
+            except (TypeError, ValueError):
+                pass
+        finding_type = row.get("finding_type") or row.get("evidence_type")
+        evidence = row.get("evidence") or {}
+        return {
+            "cve_id":       row.get("cve_id"),
+            "check_id":     row.get("check_id"),
+            "verdict":      row.get("verdict"),
+            "risk_score":   risk_score,
+            "priority":     row.get("priority"),
+            "confidence":   confidence,
+            "finding_type": finding_type,
+            "evidence":     evidence,
+        }

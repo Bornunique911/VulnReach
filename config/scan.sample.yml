@@ -1,0 +1,27 @@
+scan:
+  static_reachability: true
+  tools:
+    - git # double check if provided tools are only executed and not all - but git should be used by default if git repostiry is detected
+    - trivy
+    - tainter
+    - python_reachability
+    - route_extractor
+    - metadata
+    - dynamic_reachability
+    # - semgrep  # uncomment to enable Semgrep agent
+  runtime:
+    enabled: true         # set to true to enable dynamic reachability
+    timeout: 120            # max seconds to wait for container + schemathesis
+    coverage_wait: 10      # seconds to wait after traffic before collecting coverage
+    container_port: 3000   # port the app runs on inside the container
+
+risk:
+  exposure: public
+  data_sensitivity: high
+
+policy:
+  block_if:
+    - severity: CRITICAL
+      verdict: CONFIRMED
+    - severity: HIGH
+      verdict: CONFIRMED

@@ -1,0 +1,25 @@
+scan:
+  static_reachability: true
+  tools:
+    - git
+    - trivy
+    - python_reachability
+    - tainter
+    - route_extractor
+  runtime:
+#    command: "python -c 'print(1)'"
+    enabled: true         # set to true to enable dynamic reachability
+    timeout: 60            # max seconds to wait for container + schemathesis
+    coverage_wait: 10      # seconds to wait after traffic before collecting coverage
+    container_port: 3000   # port the app runs on inside the container
+
+
+risk:
+  exposure: public
+  data_sensitivity: high
+
+policy:
+  block_if:
+    - severity: CRITICAL
+      verdict: CONFIRMED
+

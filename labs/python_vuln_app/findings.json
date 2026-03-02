@@ -1,0 +1,198 @@
+{
+  "summary": {
+    "flows_detected": 3,
+    "files_analyzed": 2,
+    "functions_analyzed": 10,
+    "errors": 0,
+    "duration_seconds": 0.0030138492584228516
+  },
+  "flows": [
+    {
+      "id": "FLOW-219D1676",
+      "vulnerability_class": "DESERIALIZE",
+      "confidence": "HIGH",
+      "message": "Potential Deserialize vulnerability: Untrusted data from request flows to load in yaml_unsafe()",
+      "source": {
+        "definition": {
+          "module": "flask",
+          "function": "request",
+          "attribute": "args.get",
+          "returns_tainted": true,
+          "framework": "flask",
+          "description": "User input from request.args.get"
+        },
+        "location": {
+          "file": "/Users/hrishikesh/Desktop/github_projects/vulnreach-parent/vulnreach-agent/labs/python_vuln_app/src/app.py",
+          "line": 110,
+          "column": 0
+        },
+        "code": "user_yaml = request.args.get('data', 'key: value')   # \u2190 SOURCE T1"
+      },
+      "sink": {
+        "definition": {
+          "module": "yaml",
+          "function": "load",
+          "vulnerable_parameters": [
+            0
+          ],
+          "vulnerability_class": "DESERIALIZE",
+          "description": ""
+        },
+        "location": {
+          "file": "/Users/hrishikesh/Desktop/github_projects/vulnreach-parent/vulnreach-agent/labs/python_vuln_app/src/app.py",
+          "line": 115,
+          "column": 15
+        },
+        "code": "data = yaml.load(user_yaml, Loader=yaml.Loader)   # \u2190 SINK T1 \u2192 RCE"
+      },
+      "steps": [
+        {
+          "location": {
+            "file": "/Users/hrishikesh/Desktop/github_projects/vulnreach-parent/vulnreach-agent/labs/python_vuln_app/src/app.py",
+            "line": 110,
+            "column": 0
+          },
+          "description": "Assigned to user_yaml",
+          "variable": "user_yaml",
+          "code_snippet": "user_yaml = request.args.get('data', 'key: value')   # \u2190 SOURCE T1",
+          "function_name": "src.app.yaml_unsafe"
+        }
+      ],
+      "call_chain": [
+        "src.app.yaml_unsafe"
+      ],
+      "variable_path": [
+        "user_yaml"
+      ]
+    },
+    {
+      "id": "FLOW-F96280FB",
+      "vulnerability_class": "SSRF",
+      "confidence": "HIGH",
+      "message": "Potential Ssrf vulnerability: Untrusted data from request flows to get in ssrf()",
+      "source": {
+        "definition": {
+          "module": "flask",
+          "function": "request",
+          "attribute": "args.get",
+          "returns_tainted": true,
+          "framework": "flask",
+          "description": "User input from request.args.get"
+        },
+        "location": {
+          "file": "/Users/hrishikesh/Desktop/github_projects/vulnreach-parent/vulnreach-agent/labs/python_vuln_app/src/app.py",
+          "line": 156,
+          "column": 0
+        },
+        "code": "target_url = request.args.get('url', 'https://httpbin.org/get')  # \u2190 SOURCE T2"
+      },
+      "sink": {
+        "definition": {
+          "module": "requests",
+          "function": "get",
+          "vulnerable_parameters": [
+            0
+          ],
+          "vulnerability_class": "SSRF",
+          "description": ""
+        },
+        "location": {
+          "file": "/Users/hrishikesh/Desktop/github_projects/vulnreach-parent/vulnreach-agent/labs/python_vuln_app/src/app.py",
+          "line": 161,
+          "column": 19
+        },
+        "code": "response = requests.get(target_url, timeout=5)                # \u2190 SINK T2 \u2192 SSRF"
+      },
+      "steps": [
+        {
+          "location": {
+            "file": "/Users/hrishikesh/Desktop/github_projects/vulnreach-parent/vulnreach-agent/labs/python_vuln_app/src/app.py",
+            "line": 156,
+            "column": 0
+          },
+          "description": "Assigned to target_url",
+          "variable": "target_url",
+          "code_snippet": "target_url = request.args.get('url', 'https://httpbin.org/get')  # \u2190 SOURCE T2",
+          "function_name": "src.app.ssrf"
+        }
+      ],
+      "call_chain": [
+        "src.app.ssrf"
+      ],
+      "variable_path": [
+        "target_url"
+      ]
+    },
+    {
+      "id": "FLOW-0458CE65",
+      "vulnerability_class": "SSTI",
+      "confidence": "HIGH",
+      "message": "Potential Ssti vulnerability: Untrusted data from request flows to render_template_string in render_test()",
+      "source": {
+        "definition": {
+          "module": "flask",
+          "function": "request",
+          "attribute": "args.get",
+          "returns_tainted": true,
+          "framework": "flask",
+          "description": "User input from request.args.get"
+        },
+        "location": {
+          "file": "/Users/hrishikesh/Desktop/github_projects/vulnreach-parent/vulnreach-agent/labs/python_vuln_app/src/app.py",
+          "line": 190,
+          "column": 0
+        },
+        "code": "name = request.args.get('name', 'world')      # \u2190 SOURCE T3"
+      },
+      "sink": {
+        "definition": {
+          "module": "flask",
+          "function": "render_template_string",
+          "vulnerable_parameters": [
+            0
+          ],
+          "vulnerability_class": "SSTI",
+          "description": ""
+        },
+        "location": {
+          "file": "/Users/hrishikesh/Desktop/github_projects/vulnreach-parent/vulnreach-agent/labs/python_vuln_app/src/app.py",
+          "line": 198,
+          "column": 11
+        },
+        "code": "return render_template_string(template)       # \u2190 SINK T3 \u2192 SSTI / RCE"
+      },
+      "steps": [
+        {
+          "location": {
+            "file": "/Users/hrishikesh/Desktop/github_projects/vulnreach-parent/vulnreach-agent/labs/python_vuln_app/src/app.py",
+            "line": 190,
+            "column": 0
+          },
+          "description": "Assigned to name",
+          "variable": "name",
+          "code_snippet": "name = request.args.get('name', 'world')      # \u2190 SOURCE T3",
+          "function_name": "src.app.render_test"
+        },
+        {
+          "location": {
+            "file": "/Users/hrishikesh/Desktop/github_projects/vulnreach-parent/vulnreach-agent/labs/python_vuln_app/src/app.py",
+            "line": 194,
+            "column": 0
+          },
+          "description": "Assigned to template",
+          "variable": "template",
+          "code_snippet": "template = f\"<h1>Hello, {name}!</h1>\"         # \u2190 PROPAGATE T3",
+          "function_name": "src.app.render_test"
+        }
+      ],
+      "call_chain": [
+        "src.app.render_test"
+      ],
+      "variable_path": [
+        "name",
+        "template"
+      ]
+    }
+  ],
+  "errors": []
+}

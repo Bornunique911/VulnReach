@@ -1,0 +1,12 @@
+#FILES
+pytest.ini
+TODO-PRIVATE.md
+
+#DIRECTORIES
+.env
+auditor-prompts/*
+scans/*
+security_findings/*
+tests/*
+reviews/*
+output/*
