@@ -12,6 +12,7 @@ from .agent_tainter import TainterAgent
 from .agent_semgrep import SemgrepAgent
 from .agent_python_reachability import PythonReachabilityAgent
 from .agent_dynamic_reachability import DynamicReachabilityAgent
+from .agent_intelligent_dast import IntelligentDastAgent
 from .agent_routextractor import RouteExtractorAgent
 from .agent_metadata import MetadataAgent
 
@@ -27,6 +28,7 @@ class AgentRunner:
         self.semgrep = SemgrepAgent()
         self.python_reachability = PythonReachabilityAgent()
         self.dynamic_reachability = DynamicReachabilityAgent()
+        self.intelligent_dast = IntelligentDastAgent()
         self.route_extractor = RouteExtractorAgent()
         self.metadata_agent = MetadataAgent()
 
@@ -111,6 +113,23 @@ class AgentRunner:
                 logger.warning("agent_error", extra={"scan_id": context.scan_id, "agent": "dynamic_reachability", "error": dyn_result.metadata})
             else:
                 logger.info("agent_complete", extra={"scan_id": context.scan_id, "agent": "dynamic_reachability"})
+
+        # Intelligent DAST runs if enabled in config (needs taint_flows from tainter)
+        if context.config and context.config.scan.intelligent_dast.enabled:
+            logger.info("agent_start", extra={"scan_id": context.scan_id, "agent": "intelligent_dast"})
+            dast_result = await self._run_agent(self.intelligent_dast, context)
+            results.append(dast_result)
+            self.storage.store_raw_output(
+                context.scan_id or "",
+                self.intelligent_dast.tool_name,
+                dast_result.metadata.get("raw", dast_result.metadata or {}),
+            )
+            if dast_result.findings:
+                self.storage.store_reachability(context.scan_id or "", dast_result.findings)
+            if dast_result.metadata.get("error"):
+                logger.warning("agent_error", extra={"scan_id": context.scan_id, "agent": "intelligent_dast", "error": dast_result.metadata})
+            else:
+                logger.info("agent_complete", extra={"scan_id": context.scan_id, "agent": "intelligent_dast"})
 
         if "route_extractor" in tools:
             logger.info("agent_start", extra={"scan_id": context.scan_id, "agent": "route_extractor"})

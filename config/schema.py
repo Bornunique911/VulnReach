@@ -26,12 +26,26 @@ class RuntimeSettings(BaseModel):
     ebpf: EbpfSettings = EbpfSettings()
 
 
+class IntelligentDastSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    provider: str = "anthropic"  # "anthropic" | "openai" | "ollama"
+    model: str = "claude-sonnet-4-20250514"
+    api_key_env: str = "ANTHROPIC_API_KEY"
+    base_url: str = ""  # override target URL; empty = auto-detect from runtime
+    ollama_base_url: str = "http://localhost:11434"
+    max_iter: int = 5
+    auth_credentials: str = ""  # optional "user:pass" for target app auth
+
+
 class ScanSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     static_reachability: bool = True
     tools: List[str] = ["trivy", "tainter"]
     runtime: RuntimeSettings = RuntimeSettings()
+    intelligent_dast: IntelligentDastSettings = IntelligentDastSettings()
 
 
 

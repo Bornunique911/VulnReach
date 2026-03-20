@@ -12,6 +12,76 @@ const TOOL_DEFS = {
   metadata:             { icon: '◇', desc: 'Dependency metadata enrichment' },
 };
 
+// ─── Auth state ────────────────────────────────────────────────────────────
+let authToken = sessionStorage.getItem('vr_token') || null;
+
+function isLoggedIn() { return !!authToken; }
+
+function setAuthToken(token) {
+  authToken = token;
+  if (token) sessionStorage.setItem('vr_token', token);
+  else sessionStorage.removeItem('vr_token');
+  updateAuthUI();
+}
+
+function updateAuthUI() {
+  const banner = document.getElementById('auth-banner');
+  const btn = document.getElementById('auth-btn');
+  if (isLoggedIn()) {
+    if (banner) banner.style.display = 'none';
+    if (btn) { btn.textContent = '⏻ Sign out'; btn.onclick = doLogout; }
+  } else {
+    if (banner) banner.style.display = '';
+    if (btn) { btn.textContent = '⚿ Sign in'; btn.onclick = showLoginModal; }
+  }
+}
+
+function showLoginModal() {
+  document.getElementById('login-overlay').classList.add('open');
+  document.getElementById('login-modal').classList.add('open');
+  document.getElementById('login-error').textContent = '';
+  document.getElementById('login-username').focus();
+}
+
+function hideLoginModal() {
+  document.getElementById('login-overlay').classList.remove('open');
+  document.getElementById('login-modal').classList.remove('open');
+}
+
+async function doLogin() {
+  const username = document.getElementById('login-username').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  if (!username || !password) { errEl.textContent = 'Username and password required'; return; }
+  try {
+    const res = await fetch(API + '/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      errEl.textContent = body.detail || 'Invalid credentials';
+      return;
+    }
+    const data = await res.json();
+    setAuthToken(data.access_token);
+    hideLoginModal();
+    toast('Signed in', 'success');
+    loadScans();
+  } catch (e) {
+    errEl.textContent = 'Cannot reach API';
+  }
+}
+
+function doLogout() {
+  setAuthToken(null);
+  scans = [];
+  renderScans();
+  updateStats();
+  toast('Signed out', 'info');
+}
+
 // ─── State ─────────────────────────────────────────────────────────────────
 let scans = [];
 let selectedTools = new Set(['trivy','tainter','python_reachability']);
@@ -47,6 +117,7 @@ function groupByRepo(scanList) {
 
 // ─── Init ──────────────────────────────────────────────────────────────────
 (async () => {
+  updateAuthUI();
   buildToolChips();
   buildToolsPage();
   await loadScans();
@@ -72,10 +143,15 @@ function setPage(id) {
 
 // ─── API helpers ───────────────────────────────────────────────────────────
 async function apiFetch(path, opts = {}) {
-  const res = await fetch(API + path, {
-    headers: { 'Content-Type': 'application/json', ...opts.headers },
-    ...opts,
-  });
+  const headers = { 'Content-Type': 'application/json', ...opts.headers };
+  if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
+  const res = await fetch(API + path, { headers, ...opts });
+  if (res.status === 401) {
+    // Token expired or invalid — clear and prompt login
+    setAuthToken(null);
+    toast('Session expired — please sign in again', 'error');
+    throw new Error('Unauthorized');
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return await res.json();
 }
@@ -584,7 +660,6 @@ function startAutoRefresh() {
 // ─── Auth info ─────────────────────────────────────────────────────────────
 function showAuthInfo() {
   setPage('api');
-  toast('Auth page — Google SSO + API keys planned', 'info');
 }
 
 // ─── Toast ─────────────────────────────────────────────────────────────────

@@ -164,6 +164,14 @@ class PostgresRepository(StorageRepository):
             framework TEXT,
             prefix TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS users (
+            id UUID PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'analyst',
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
         """
         with self._conn() as conn:
             with conn.cursor() as cur:
@@ -525,6 +533,25 @@ class PostgresRepository(StorageRepository):
                     }
                     for row in rows
                 ]
+
+    # ── User management ──────────────────────────────────────────────
+
+    def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT id, username, password_hash, role FROM users WHERE username=%s",
+                    (username,),
+                )
+                return cur.fetchone()
+
+    def create_user(self, user_id: str, username: str, password_hash: str, role: str = "analyst") -> None:
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO users (id, username, password_hash, role) VALUES (%s, %s, %s, %s) ON CONFLICT (username) DO NOTHING",
+                    (user_id, username, password_hash, role),
+                )
 
     def _convert_correlation(self, row: Dict[str, Any]) -> Dict[str, Any]:
         risk_score = row.get("risk_score")

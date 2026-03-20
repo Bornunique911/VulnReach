@@ -5,3 +5,5 @@ pyyaml
 packaging
 psycopg2-binary
 python-dotenv
+bcrypt
+python-jose[cryptography]

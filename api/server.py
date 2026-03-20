@@ -1,18 +1,32 @@
 from dotenv import load_dotenv
+from pathlib import Path
 import os
+import uuid
 import logging
 from typing import Any, Dict, List
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from pydantic import BaseModel
 
 from agents.runner import AgentRunner
+from api.auth import (
+    UserPrincipal,
+    create_token,
+    hash_password,
+    require_admin,
+    require_user,
+    verify_password,
+)
 from core.orchestrator import Orchestrator
 from config.schema import load_config
 from core.models import ScanContext, AgentResult
 from correlation.service import CorrelationService
 from storage.repository import PostgresRepository
 
+# Load .env.local first (secrets), then .env as fallback
+load_dotenv(dotenv_path=Path(".env.local"), override=True)
 load_dotenv()
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 app = FastAPI(title="VulnReach v2")
@@ -21,11 +35,58 @@ storage = PostgresRepository(os.getenv("DATABASE_URL"))
 runner = AgentRunner(storage)
 correlation_service = CorrelationService()
 orchestrator = Orchestrator(storage, runner, correlation_service)
-AVAILABLE_TOOLS: List[str] = ["git", "trivy", "tainter", "python_reachability", "dynamic_reachability", "semgrep", "route_extractor", "metadata"]
+AVAILABLE_TOOLS: List[str] = ["git", "trivy", "tainter", "python_reachability", "dynamic_reachability", "intelligent_dast", "semgrep", "route_extractor", "metadata"]
 
+
+# ── Seed admin user on startup ───────────────────────────────────
+
+def _seed_admin() -> None:
+    username = os.getenv("SEED_ADMIN_USERNAME")
+    password = os.getenv("SEED_ADMIN_PASSWORD")
+    if not username or not password:
+        logger.info("SEED_ADMIN_USERNAME/PASSWORD not set — skipping admin seed")
+        return
+    existing = storage.get_user_by_username(username)
+    if existing:
+        return
+    storage.create_user(
+        user_id=str(uuid.uuid4()),
+        username=username,
+        password_hash=hash_password(password),
+        role="admin",
+    )
+    logger.info("Seeded admin user '%s'", username)
+
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    _seed_admin()
+
+
+# ── Auth endpoints ───────────────────────────────────────────────
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/login")
+async def login(body: LoginRequest):
+    user = storage.get_user_by_username(body.username)
+    if not user or not verify_password(body.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    principal = UserPrincipal(id=str(user["id"]), username=user["username"], role=user["role"])
+    return {"access_token": create_token(principal), "token_type": "bearer"}
+
+
+# ── Protected endpoints ──────────────────────────────────────────
 
 @app.post("/scan")
-async def start_scan(payload: Dict[str, Any], background_tasks: BackgroundTasks):
+async def start_scan(
+    payload: Dict[str, Any],
+    background_tasks: BackgroundTasks,
+    _principal: UserPrincipal = Depends(require_user),
+):
     repo_path = payload.get("repo_path")
     repo_url = payload.get("repo_url")
     config_path = payload.get("config_path")
@@ -58,7 +119,7 @@ async def start_scan(payload: Dict[str, Any], background_tasks: BackgroundTasks)
 
 
 @app.get("/scan/{scan_id}")
-async def get_scan(scan_id: str):
+async def get_scan(scan_id: str, _principal: UserPrincipal = Depends(require_user)):
     try:
         scan = storage.get_scan(scan_id)
     except Exception:
@@ -69,9 +130,11 @@ async def get_scan(scan_id: str):
 
 
 @app.get("/scans")
-async def list_scans():
+async def list_scans(_principal: UserPrincipal = Depends(require_user)):
     return {"scans": storage.list_scans()}
 
+
+# ── Public endpoints ─────────────────────────────────────────────
 
 @app.get("/health")
 async def health():

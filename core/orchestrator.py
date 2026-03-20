@@ -134,6 +134,22 @@ class Orchestrator:
                 "confidence": confidence,
             }
 
+        # ------------------------------------------------------------------
+        # Build DAST evidence map
+        # Source: intelligent_dast agent — Claude-steered SQLi confirmation
+        # These are already verdict=CONFIRMED with confidence=1.0
+        # ------------------------------------------------------------------
+        dast_findings: list[dict[str, Any]] = []
+        for result in results:
+            if result.tool_name == "intelligent_dast":
+                dast_findings.extend(result.findings)
+                # Also store the full DAST metadata (iterations, payloads, etc.)
+                if result.metadata.get("findings"):
+                    self.storage.store_raw_output(
+                        scan_id, "intelligent_dast_detail",
+                        result.metadata["findings"],
+                    )
+
         semgrep_result = next((res for res in results if res.tool_name == "semgrep"), AgentResult(tool_name="semgrep"))
         self.storage.store_semgrep_findings(scan_id, semgrep_result.findings)
 
@@ -144,6 +160,7 @@ class Orchestrator:
             exposure=config.risk.exposure,
             policy_rules=[rule.model_dump() for rule in config.policy.block_if],
             semgrep_findings=semgrep_result.findings,
+            dast_findings=dast_findings,
         )
         self.storage.store_correlation(scan_id, correlation_output["correlation"])
 

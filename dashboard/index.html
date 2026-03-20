@@ -19,7 +19,7 @@
     </div>
     <div class="topbar-right">
       <div class="status-dot"><div class="dot"></div><span id="api-status">API connected</span></div>
-      <button class="btn-auth" onclick="showAuthInfo()">⚿ Sign in (Google SSO)</button>
+      <button class="btn-auth" id="auth-btn" onclick="showLoginModal()">⚿ Sign in</button>
     </div>
   </header>
 
@@ -55,9 +55,10 @@
         <div class="nav-label">Endpoints</div>
         <div style="padding:0 0.5rem">
           <div style="font-size:0.68rem;color:var(--text-mute);line-height:1.8">
-            <div><span style="color:var(--green)">POST</span> /scan</div>
-            <div><span style="color:var(--blue)">GET</span>  /scan/{id}</div>
-            <div><span style="color:var(--blue)">GET</span>  /scans</div>
+            <div><span style="color:var(--green)">POST</span> /login</div>
+            <div><span style="color:var(--green)">POST</span> /scan <span style="opacity:0.5">🔒</span></div>
+            <div><span style="color:var(--blue)">GET</span>  /scan/{id} <span style="opacity:0.5">🔒</span></div>
+            <div><span style="color:var(--blue)">GET</span>  /scans <span style="opacity:0.5">🔒</span></div>
             <div><span style="color:var(--blue)">GET</span>  /health</div>
             <div><span style="color:var(--blue)">GET</span>  /tools</div>
           </div>
@@ -68,9 +69,9 @@
     <!-- Main content -->
     <main class="main" id="main-content">
 
-      <!-- Auth notice -->
-      <div class="auth-banner">
-        ⚠ Auth is not yet enabled. <a onclick="showAuthInfo()">Google SSO + API key auth is planned</a> — all endpoints are currently open.
+      <!-- Auth notice (shown when not logged in) -->
+      <div class="auth-banner" id="auth-banner">
+        ⚠ You are not signed in. <a onclick="showLoginModal()">Sign in</a> to access scan endpoints.
       </div>
 
       <!-- Page: Scans -->
@@ -223,25 +224,28 @@
         </div>
         <div class="scan-form-card">
           <div style="font-size:0.85rem;line-height:1.8;color:var(--text-dim)">
-            <p style="color:var(--text);font-family:var(--sans);font-size:1rem;font-weight:600;margin-bottom:0.75rem">Planned Auth Strategy</p>
-            <p style="margin-bottom:1rem">VulnReach v2 will support two authentication modes:</p>
+            <p style="color:var(--text);font-family:var(--sans);font-size:1rem;font-weight:600;margin-bottom:0.75rem">JWT Authentication</p>
+            <p style="margin-bottom:1rem">VulnReach v2 uses JWT bearer tokens. Obtain a token via <code style="color:var(--green)">POST /login</code>, then pass it in the <code>Authorization</code> header.</p>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem">
               <div style="border:1px solid var(--border);border-radius:6px;padding:1rem">
-                <div style="color:var(--green);font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem">Browser / Human Access</div>
-                <div style="color:var(--text);font-weight:600;margin-bottom:0.4rem">Google SSO (OAuth 2.0)</div>
-                <div style="font-size:0.75rem">Sign in with your Google workspace account. Session tokens stored in HttpOnly cookies. Refresh tokens handled server-side.</div>
+                <div style="color:var(--green);font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem">Browser / Dashboard</div>
+                <div style="color:var(--text);font-weight:600;margin-bottom:0.4rem">Sign in via the dashboard</div>
+                <div style="font-size:0.75rem">Click "Sign in" in the top bar. Token is stored in-memory for the session.</div>
               </div>
               <div style="border:1px solid var(--border);border-radius:6px;padding:1rem">
                 <div style="color:var(--blue);font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem">API / Machine Access</div>
-                <div style="color:var(--text);font-weight:600;margin-bottom:0.4rem">API Keys or JWT Bearer tokens</div>
-                <div style="font-size:0.75rem">Long-lived API keys for CI/CD pipelines. Short-lived JWT bearer tokens for service-to-service. Scopes: <code style="color:var(--green)">scan:write</code> <code style="color:var(--green)">scan:read</code>.</div>
+                <div style="color:var(--text);font-weight:600;margin-bottom:0.4rem">JWT Bearer tokens</div>
+                <div style="font-size:0.75rem">Short-lived JWT tokens for CI/CD and service-to-service. Roles: <code style="color:var(--green)">admin</code> <code style="color:var(--green)">analyst</code>.</div>
               </div>
             </div>
             <div style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1rem;font-family:var(--mono);font-size:0.75rem;color:var(--text-dim)">
-              <div style="color:var(--text-mute);margin-bottom:0.4rem"># Example API key usage</div>
-              <div>curl -H <span style="color:var(--green)">"Authorization: Bearer &lt;API_KEY&gt;"</span> \</div>
-              <div>&nbsp;&nbsp;&nbsp;&nbsp; -X POST https://vulnreach.internal/scan \</div>
-              <div>&nbsp;&nbsp;&nbsp;&nbsp; -d '{"repo_path":"/app","config_path":"/app/vulnreach.yaml"}'</div>
+              <div style="color:var(--text-mute);margin-bottom:0.4rem"># 1. Get a token</div>
+              <div>curl -X POST http://localhost:8000/login \</div>
+              <div>&nbsp;&nbsp;&nbsp;&nbsp; -H <span style="color:var(--green)">"Content-Type: application/json"</span> \</div>
+              <div>&nbsp;&nbsp;&nbsp;&nbsp; -d <span style="color:var(--green)">'{"username":"admin","password":"changeme"}'</span></div>
+              <div style="color:var(--text-mute);margin-top:0.75rem;margin-bottom:0.4rem"># 2. Use the token</div>
+              <div>curl -H <span style="color:var(--green)">"Authorization: Bearer &lt;TOKEN&gt;"</span> \</div>
+              <div>&nbsp;&nbsp;&nbsp;&nbsp; http://localhost:8000/scans</div>
             </div>
           </div>
         </div>
@@ -263,6 +267,28 @@
       </div>
 
     </main>
+  </div>
+</div>
+
+<!-- Login modal -->
+<div class="panel-overlay" id="login-overlay" onclick="hideLoginModal()"></div>
+<div class="login-modal" id="login-modal">
+  <div class="panel-header">
+    <div class="panel-title">Sign in to VulnReach</div>
+    <button class="panel-close" onclick="hideLoginModal()">✕</button>
+  </div>
+  <div style="padding:1.25rem">
+    <div class="form-group">
+      <label class="form-label">Username</label>
+      <input class="form-input" id="login-username" placeholder="admin" autocomplete="username" />
+    </div>
+    <div class="form-group" style="margin-top:0.75rem">
+      <label class="form-label">Password</label>
+      <input class="form-input" id="login-password" type="password" placeholder="password" autocomplete="current-password"
+             onkeydown="if(event.key==='Enter')doLogin()" />
+    </div>
+    <div id="login-error" style="font-size:0.75rem;color:var(--red);margin-top:0.5rem;min-height:1.1em"></div>
+    <button class="btn-primary" style="width:100%;margin-top:0.75rem" onclick="doLogin()">Sign in</button>
   </div>
 </div>
 

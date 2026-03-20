@@ -12,6 +12,7 @@ class CorrelationService:
         exposure: str,
         policy_rules: Optional[List[Dict[str, Any]]] = None,
         semgrep_findings: Optional[List[Dict[str, Any]]] = None,
+        dast_findings: Optional[List[Dict[str, Any]]] = None,
         # Legacy compatibility: single merged map still accepted
         reachability: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
@@ -130,6 +131,39 @@ class CorrelationService:
                 }
             )
             if apply_policy(severity, verdict, rules) == "BLOCK":
+                pipeline_status = "BLOCK"
+
+        # ----------------------------------------------------------------
+        # DAST findings — Claude-steered payload confirmation (SQLi v1)
+        # These come pre-confirmed from the intelligent_dast agent.
+        # ----------------------------------------------------------------
+        for finding in dast_findings or []:
+            cve_id = finding.get("cve_id")
+            sev = finding.get("dast_severity", "HIGH").upper()
+            verdict = finding.get("verdict", "CONFIRMED")
+            score = risk_score(sev, verdict, exposure)
+            priority = priority_from_score(score)
+            correlation_results.append(
+                {
+                    "cve_id": cve_id,
+                    "verdict": verdict,
+                    "risk_score": score,
+                    "priority": priority,
+                    "confidence": finding.get("confidence", 1.0),
+                    "finding_type": "dast",
+                    "evidence": {
+                        "vuln_class": finding.get("dast_vuln_class", "sql_injection"),
+                        "severity": sev,
+                        "endpoint": finding.get("function", ""),
+                        "parameter": finding.get("sink", ""),
+                        "payload": finding.get("dast_payload"),
+                        "confirmation_method": finding.get("dast_method"),
+                        "reasoning": finding.get("dast_reasoning"),
+                        "files": finding.get("files", []),
+                    },
+                }
+            )
+            if apply_policy(sev, verdict, rules) == "BLOCK":
                 pipeline_status = "BLOCK"
 
         return {"correlation": correlation_results, "pipeline_status": pipeline_status}

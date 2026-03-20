@@ -1,0 +1,115 @@
+import base64
+import hashlib
+import os
+import logging
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+import bcrypt as _bcrypt
+from dotenv import load_dotenv
+from fastapi import Depends, HTTPException, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from jose import JWTError, jwt
+
+logger = logging.getLogger(__name__)
+
+_ALGORITHM = "HS256"
+
+
+# Track .env.local mtime so we reload env vars whenever the file changes.
+# This means rotating JWT_SECRET immediately invalidates all live sessions.
+_ENV_FILE = Path(".env.local")
+_env_mtime: float = 0.0
+
+
+def _reload_env_if_changed() -> None:
+    """Re-read .env.local into os.environ when the file has been modified."""
+    global _env_mtime
+    if not _ENV_FILE.exists():
+        return
+    mtime = _ENV_FILE.stat().st_mtime
+    if mtime != _env_mtime:
+        load_dotenv(dotenv_path=_ENV_FILE, override=True)
+        _env_mtime = mtime
+        logger.info(".env.local changed — env reloaded")
+
+_bearer = HTTPBearer(auto_error=False)
+
+
+def _prehash(plain: str) -> bytes:
+    """SHA-256 pre-hash → 32 bytes, always under bcrypt's 72-byte limit."""
+    return hashlib.sha256(plain.encode("utf-8")).digest()
+
+
+@dataclass
+class UserPrincipal:
+    id: str
+    username: str
+    role: str  # "admin" | "analyst"
+
+_BCRYPT_ROUNDS = int(os.getenv("BCRYPT_ROUNDS", "12"))
+
+def hash_password(plain: str) -> str:
+    return _bcrypt.hashpw(_prehash(plain), _bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)).decode("utf-8")
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    """Constant-time bcrypt comparison — safe against timing attacks."""
+    return _bcrypt.checkpw(_prehash(plain), hashed.encode("utf-8"))
+
+
+def _jwt_secret() -> str:
+    _reload_env_if_changed()
+    secret = os.getenv("JWT_SECRET")
+    if not secret:
+        raise RuntimeError("JWT_SECRET env var must be set")
+    return secret
+
+
+def create_token(principal: UserPrincipal) -> str:
+    # exp must be an integer Unix timestamp — passing a datetime can produce
+    # a float in some python-jose versions, which breaks standard JWT decoders.
+    # Read expiry at call time so .env.local changes take effect on next login.
+    expire_minutes = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
+    now = int(time.time())
+    payload = {
+        "sub": principal.id,
+        "username": principal.username,
+        "role": principal.role,
+        "iat": now,
+        "exp": now + (expire_minutes * 60),
+    }
+    return jwt.encode(payload, _jwt_secret(), algorithm=_ALGORITHM)
+
+
+def _decode_token(token: str) -> UserPrincipal:
+    try:
+        payload = jwt.decode(token, _jwt_secret(), algorithms=[_ALGORITHM])
+    except JWTError as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired token") from exc
+
+    sub = payload.get("sub")
+    username = payload.get("username")
+    role = payload.get("role")
+    if not sub or not username or not role:
+        raise HTTPException(status_code=401, detail="Malformed token claims")
+
+    return UserPrincipal(id=sub, username=username, role=role)
+
+
+def require_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(_bearer),
+) -> UserPrincipal:
+    """Dependency: any authenticated user."""
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    return _decode_token(credentials.credentials)
+
+
+def require_admin(principal: UserPrincipal = Depends(require_user)) -> UserPrincipal:
+    """Dependency: authenticated user with admin role."""
+    if principal.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return principal
