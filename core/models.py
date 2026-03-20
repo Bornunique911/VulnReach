@@ -16,6 +16,8 @@ class ScanContext:
     config: Optional[Any] = None  # Populated after config parsing
     scan_id: Optional[str] = None
     vulnerabilities: List[Dict[str, Any]] = field(default_factory=list)
+    import_map: Dict[str, str] = field(default_factory=dict)
+    taint_flows: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class VulnerabilityFinding(BaseModel):

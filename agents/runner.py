@@ -78,6 +78,8 @@ class AgentRunner:
                 tainter_result.metadata.get("raw", tainter_result.metadata or {}),
              )
             self.storage.store_reachability(context.scan_id or "", tainter_result.findings)
+            # Populate taint_flows on context for downstream agents (e.g. intelligent_dast)
+            context.taint_flows = tainter_result.metadata.get("flows", [])
             logger.info("agent_complete", extra={"scan_id": context.scan_id, "agent": "tainter"})
 
         if "python_reachability" in tools:

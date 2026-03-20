@@ -82,6 +82,7 @@ class TainterAgent(BaseAgent):
                 "status": "ok",
                 "finding_count": len(findings),
                 "flow_count": len(flows),
+                "flows": flows,
                 "scan": scan_meta,
                 "parse": parse_meta,
             },

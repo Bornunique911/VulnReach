@@ -104,13 +104,42 @@ def assemble(
 # Taint path construction
 # ---------------------------------------------------------------------------
 
+def _normalise_flow(flow: Dict[str, Any]) -> Dict[str, Any]:
+    """Flatten a tainter flow dict that may have nested source/sink objects
+    into the flat format expected by _build_taint_paths."""
+    flat: Dict[str, Any] = dict(flow)
+    # Flatten nested "source" dict
+    src = flow.get("source")
+    if isinstance(src, dict):
+        flat.setdefault("source_file", src.get("file", ""))
+        flat.setdefault("source_type", src.get("type", ""))
+        flat.setdefault("source_line", src.get("line", 0))
+    # Flatten nested "sink" dict
+    sink = flow.get("sink")
+    if isinstance(sink, dict):
+        flat.setdefault("sink_function", sink.get("function", ""))
+        flat.setdefault("sink_file", sink.get("file", ""))
+        flat.setdefault("sink_line", sink.get("line", 0))
+        flat.setdefault("sink_module", sink.get("module", ""))
+    # Flatten nested "packages" list into vulnerability_class hint
+    if not flat.get("vulnerability_class"):
+        pkgs = flow.get("packages") or []
+        flat.setdefault("vulnerability_class", "")
+    # Normalise call chain
+    path = flow.get("path")
+    if isinstance(path, list):
+        flat["call_chain"] = [str(p) for p in path]
+    return flat
+
+
 def _build_taint_paths(raw_flows: List[Dict[str, Any]]) -> List[TaintPath]:
     """Adapt tainter flow summaries (from TainterAgent metadata) into TaintPath objects."""
     paths: List[TaintPath] = []
 
-    for i, flow in enumerate(raw_flows):
+    for i, raw_flow in enumerate(raw_flows):
+        flow = _normalise_flow(raw_flow)
         path_id = flow.get("id") or f"tp-{i:03d}"
-        vuln_class = (flow.get("vulnerability_class") or "").lower()
+        vuln_class = str(flow.get("vulnerability_class") or "").lower()
 
         # v1 scope: SQLi only — skip other classes
         if vuln_class and "sql" not in vuln_class and vuln_class not in ("", "unknown"):
@@ -118,10 +147,10 @@ def _build_taint_paths(raw_flows: List[Dict[str, Any]]) -> List[TaintPath]:
             continue
 
         # --- Sink ---
-        sink_fn = flow.get("sink_function") or "execute"
-        sink_file = flow.get("sink_file") or "unknown"
+        sink_fn = str(flow.get("sink_function") or "execute")
+        sink_file = str(flow.get("sink_file") or "unknown")
         sink_line = flow.get("sink_line") or 0
-        sink_module = flow.get("sink_module") or ""
+        sink_module = str(flow.get("sink_module") or "")
         sink_fn_full = f"{sink_module}.{sink_fn}".lstrip(".") if sink_module else sink_fn
 
         # Only include flows where the sink looks like a SQL operation
@@ -131,7 +160,7 @@ def _build_taint_paths(raw_flows: List[Dict[str, Any]]) -> List[TaintPath]:
                 continue
 
         # --- Source (best-effort) ---
-        source_file = flow.get("source_file") or ""
+        source_file = str(flow.get("source_file") or "")
         # Derive a placeholder source name from the call chain or source file
         call_chain = flow.get("call_chain") or []
         source_param = _infer_source_param(flow)

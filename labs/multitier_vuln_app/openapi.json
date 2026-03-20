@@ -1,0 +1,312 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "DevBlog API",
+    "description": "Multi-tier Django blogging platform with intentionally vulnerable dependencies for VulnReach testing.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    { "url": "http://127.0.0.1:8000", "description": "Local dev server" }
+  ],
+  "paths": {
+    "/api/health/": {
+      "get": {
+        "operationId": "health",
+        "summary": "Health check",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthResponse" } } }
+          }
+        }
+      }
+    },
+    "/api/": {
+      "get": {
+        "operationId": "home",
+        "summary": "API overview",
+        "responses": {
+          "200": { "description": "API index", "content": { "application/json": { "schema": { "type": "object" } } } }
+        }
+      }
+    },
+    "/api/posts/": {
+      "get": {
+        "operationId": "list_posts",
+        "summary": "List all posts",
+        "responses": {
+          "200": {
+            "description": "Post list",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Post" } } } }
+          }
+        }
+      },
+      "post": {
+        "operationId": "create_post",
+        "summary": "Create a post (Markdown rendered)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PostInput" },
+              "example": {
+                "title": "Hello World",
+                "slug": "hello-world",
+                "content": "# Hello\n\nThis is **markdown** content.",
+                "author": "alice"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Post" } } } },
+          "400": { "description": "Validation error" }
+        }
+      }
+    },
+    "/api/posts/search/": {
+      "get": {
+        "operationId": "search_posts",
+        "summary": "Search posts by title keyword (SQL injection — raw cursor.execute)",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "Search keyword injected directly into SQL LIKE clause",
+            "schema": { "type": "string" },
+            "example": "hello"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search results",
+            "content": { "application/json": { "schema": { "type": "object" } } }
+          }
+        }
+      }
+    },
+    "/api/posts/import/": {
+      "post": {
+        "operationId": "import_posts",
+        "summary": "Import posts from a YAML document (yaml.load — unsafe)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": { "type": "string", "format": "binary" },
+              "example": "- title: Imported Post\n  slug: imported-post\n  content: Hello from YAML\n  author: yaml-bot\n"
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Imported", "content": { "application/json": { "schema": { "type": "object", "properties": { "imported": { "type": "integer" }, "ids": { "type": "array", "items": { "type": "integer" } } } } } } },
+          "400": { "description": "YAML parse error" }
+        }
+      }
+    },
+    "/api/images/upload/": {
+      "post": {
+        "operationId": "upload_image",
+        "summary": "Upload an image (Pillow processes without size limits)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "image": { "type": "string", "format": "binary" }
+                },
+                "required": ["image"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Uploaded", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ImageAsset" } } } },
+          "400": { "description": "Invalid image" }
+        }
+      }
+    },
+    "/api/fetch-preview/": {
+      "get": {
+        "operationId": "fetch_preview",
+        "summary": "Fetch link preview from URL (SSRF — no validation)",
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string", "format": "uri" },
+            "example": "http://example.com"
+          }
+        ],
+        "responses": {
+          "200": { "description": "Preview metadata", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LinkPreview" } } } },
+          "400": { "description": "Missing url" },
+          "502": { "description": "Upstream error" }
+        }
+      }
+    },
+    "/api/auth/token/": {
+      "post": {
+        "operationId": "auth_token",
+        "summary": "Issue a JWT (PyJWT 1.7.1 — algorithm confusion CVE)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "properties": { "username": { "type": "string" } } },
+              "example": { "username": "alice" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Token", "content": { "application/json": { "schema": { "type": "object", "properties": { "token": { "type": "string" } } } } } }
+        }
+      }
+    },
+    "/api/auth/verify/": {
+      "post": {
+        "operationId": "auth_verify",
+        "summary": "Verify a JWT",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "properties": { "token": { "type": "string" } } },
+              "example": { "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ1c2VyIn0.placeholder" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Valid", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "401": { "description": "Invalid or expired" }
+        }
+      }
+    },
+    "/api/content/sanitize/": {
+      "post": {
+        "operationId": "sanitize_content",
+        "summary": "Sanitise HTML with bleach (CVE-2021-23980 mXSS bypass)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "properties": { "html": { "type": "string" } } },
+              "example": { "html": "<p>Hello <b>world</b></p>" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Sanitised HTML", "content": { "application/json": { "schema": { "type": "object", "properties": { "original": { "type": "string" }, "sanitized": { "type": "string" } } } } } }
+        }
+      }
+    },
+    "/api/feed/parse/": {
+      "post": {
+        "operationId": "parse_feed",
+        "summary": "Parse RSS/Atom XML (lxml XXE — CVE-2022-2309)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "properties": { "xml": { "type": "string" } } },
+              "example": { "xml": "<?xml version=\"1.0\"?><rss><channel><item><title>Post 1</title><link>http://example.com/1</link></item></channel></rss>" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Parsed items", "content": { "application/json": { "schema": { "type": "object", "properties": { "items": { "type": "array", "items": { "type": "object" } }, "count": { "type": "integer" } } } } } },
+          "400": { "description": "XML parse error" }
+        }
+      }
+    },
+    "/api/backup/export/": {
+      "get": {
+        "operationId": "backup_export",
+        "summary": "Export encrypted backup (hardcoded Fernet key)",
+        "responses": {
+          "200": { "description": "Encrypted blob", "content": { "application/json": { "schema": { "type": "object", "properties": { "backup": { "type": "string" } } } } } }
+        }
+      }
+    },
+    "/api/backup/import/": {
+      "post": {
+        "operationId": "backup_import",
+        "summary": "Restore posts from encrypted backup",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "properties": { "backup": { "type": "string" } } },
+              "example": { "backup": "gAAAAAB..." }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Restored", "content": { "application/json": { "schema": { "type": "object", "properties": { "restored": { "type": "integer" } } } } } },
+          "400": { "description": "Invalid backup blob" }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "example": "ok" },
+          "service": { "type": "string", "example": "devblog-api" }
+        }
+      },
+      "Post": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "title": { "type": "string" },
+          "slug": { "type": "string" },
+          "content": { "type": "string" },
+          "rendered_html": { "type": "string" },
+          "cover_image": { "type": "string" },
+          "author": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "PostInput": {
+        "type": "object",
+        "required": ["title", "slug", "content"],
+        "properties": {
+          "title": { "type": "string", "maxLength": 255 },
+          "slug": { "type": "string", "maxLength": 50 },
+          "content": { "type": "string" },
+          "cover_image": { "type": "string" },
+          "author": { "type": "string", "maxLength": 100 }
+        }
+      },
+      "ImageAsset": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "filename": { "type": "string" },
+          "path": { "type": "string" },
+          "width": { "type": "integer" },
+          "height": { "type": "integer" },
+          "format": { "type": "string" },
+          "uploaded_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "LinkPreview": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string" },
+          "status_code": { "type": "integer" },
+          "content_type": { "type": "string" },
+          "content_length": { "type": "integer" },
+          "title": { "type": "string" }
+        }
+      }
+    }
+  }
+}

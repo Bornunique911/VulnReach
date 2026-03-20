@@ -6,73 +6,111 @@
 <title>VulnReach v2 — Reachability Intelligence</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 <link rel="stylesheet" href="dashboard.css">
 </head>
 <body>
 <div id="app">
 
-  <!-- Top bar -->
-  <header class="topbar">
-    <div class="logo">
-      <div class="logo-icon">VR</div>
-      Vuln<span>Reach</span>&nbsp;<span style="color:var(--text-mute);font-weight:400;font-size:0.85rem">v2</span>
+  <!-- Login page — shown when not authenticated -->
+  <div id="login-page" class="login-page">
+    <div class="login-card">
+      <div class="logo" style="justify-content:center;margin-bottom:1.5rem">
+        <div class="logo-icon">VR</div>
+        Vuln<span>Reach</span>&nbsp;<span style="color:var(--text-mute);font-weight:400;font-size:0.85rem">v2</span>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Username</label>
+        <input class="form-input" id="login-username" placeholder="admin" autocomplete="username" />
+      </div>
+      <div class="form-group" style="margin-top:0.75rem">
+        <label class="form-label">Password</label>
+        <input class="form-input" id="login-password" type="password" placeholder="password" autocomplete="current-password"
+               onkeydown="if(event.key==='Enter')doLogin()" />
+      </div>
+      <div id="login-error" style="font-size:0.75rem;color:var(--red);margin-top:0.5rem;min-height:1.1em"></div>
+      <button class="btn-primary" style="width:100%;margin-top:0.75rem" onclick="doLogin()">Sign in</button>
+    </div>
+  </div>
+
+  <!-- Top bar (hidden until logged in) -->
+  <header class="topbar" id="topbar" style="display:none">
+    <div class="topbar-left">
+      <button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()">
+        <i class="fas fa-bars"></i>
+      </button>
+      <div class="logo">
+        <div class="logo-icon">VR</div>
+        Vuln<span>Reach</span>&nbsp;<span style="color:var(--text-mute);font-weight:400;font-size:0.85rem">v2</span>
+      </div>
     </div>
     <div class="topbar-right">
       <div class="status-dot"><div class="dot"></div><span id="api-status">API connected</span></div>
-      <button class="btn-auth" id="auth-btn" onclick="showLoginModal()">⚿ Sign in</button>
+      <div class="profile-icon" id="profile-icon" onclick="toggleProfileMenu(event)">
+        <i class="fas fa-circle-user"></i>
+        <div class="profile-menu" id="profile-menu">
+          <div class="profile-menu-item profile-menu-user">
+            <i class="fas fa-user"></i> <span id="profile-username">admin</span>
+          </div>
+          <div class="profile-divider"></div>
+          <div class="profile-menu-item" onclick="setPage('settings')">
+            <i class="fas fa-gear"></i> Settings
+          </div>
+          <div class="profile-menu-item" onclick="doLogout()">
+            <i class="fas fa-right-from-bracket"></i> Sign Out
+          </div>
+        </div>
+      </div>
     </div>
   </header>
 
-  <div class="layout">
+  <div class="layout" id="app-layout" style="display:none">
     <!-- Sidebar -->
-    <nav class="sidebar">
+    <nav class="sidebar" id="sidebar">
+      <div class="sidebar-collapse-btn" onclick="toggleSidebar()" title="Collapse sidebar">
+        <i class="fas fa-chevron-left"></i>
+      </div>
       <div class="nav-section">
         <div class="nav-label">Analysis</div>
         <div class="nav-item active" onclick="setPage('scans')">
-          <span class="nav-icon">⬡</span> Scans
+          <span class="nav-icon"><i class="fas fa-shield-halved"></i></span>
+          <span class="nav-text">Scans</span>
           <span class="badge" id="nav-count">—</span>
         </div>
         <div class="nav-item" onclick="setPage('new')">
-          <span class="nav-icon">+</span> New Scan
+          <span class="nav-icon"><i class="fas fa-plus"></i></span>
+          <span class="nav-text">New Scan</span>
         </div>
         <div class="nav-item" onclick="setPage('findings')">
-          <span class="nav-icon">◈</span> Findings
+          <span class="nav-icon"><i class="fas fa-bug"></i></span>
+          <span class="nav-text">Findings</span>
         </div>
       </div>
       <div class="nav-section">
         <div class="nav-label">Platform</div>
         <div class="nav-item" onclick="setPage('tools')">
-          <span class="nav-icon">◧</span> Tools
+          <span class="nav-icon"><i class="fas fa-toolbox"></i></span>
+          <span class="nav-text">Tools</span>
         </div>
         <div class="nav-item" onclick="setPage('api')">
-          <span class="nav-icon">⌥</span> API Access
+          <span class="nav-icon"><i class="fas fa-key"></i></span>
+          <span class="nav-text">API Access</span>
         </div>
         <div class="nav-item" onclick="setPage('settings')">
-          <span class="nav-icon">◎</span> Settings
+          <span class="nav-icon"><i class="fas fa-gear"></i></span>
+          <span class="nav-text">Settings</span>
         </div>
       </div>
-      <div class="nav-section" style="margin-top:auto">
-        <div class="nav-label">Endpoints</div>
-        <div style="padding:0 0.5rem">
-          <div style="font-size:0.68rem;color:var(--text-mute);line-height:1.8">
-            <div><span style="color:var(--green)">POST</span> /login</div>
-            <div><span style="color:var(--green)">POST</span> /scan <span style="opacity:0.5">🔒</span></div>
-            <div><span style="color:var(--blue)">GET</span>  /scan/{id} <span style="opacity:0.5">🔒</span></div>
-            <div><span style="color:var(--blue)">GET</span>  /scans <span style="opacity:0.5">🔒</span></div>
-            <div><span style="color:var(--blue)">GET</span>  /health</div>
-            <div><span style="color:var(--blue)">GET</span>  /tools</div>
-          </div>
+      <div class="nav-section sidebar-bottom">
+        <div class="nav-item signout-item" onclick="doLogout()">
+          <span class="nav-icon"><i class="fas fa-right-from-bracket"></i></span>
+          <span class="nav-text">Sign Out</span>
         </div>
       </div>
     </nav>
 
     <!-- Main content -->
     <main class="main" id="main-content">
-
-      <!-- Auth notice (shown when not logged in) -->
-      <div class="auth-banner" id="auth-banner">
-        ⚠ You are not signed in. <a onclick="showLoginModal()">Sign in</a> to access scan endpoints.
-      </div>
 
       <!-- Page: Scans -->
       <div id="page-scans">
@@ -260,7 +298,7 @@
           </div>
         </div>
         <div class="empty-state">
-          <div class="empty-icon">◈</div>
+          <div class="empty-icon"><i class="fas fa-bug"></i></div>
           <div class="empty-text">Select a scan from Scan History to view findings</div>
           <div class="empty-sub">Or use the Scans page and click a row</div>
         </div>
@@ -270,34 +308,17 @@
   </div>
 </div>
 
-<!-- Login modal -->
-<div class="panel-overlay" id="login-overlay" onclick="hideLoginModal()"></div>
-<div class="login-modal" id="login-modal">
-  <div class="panel-header">
-    <div class="panel-title">Sign in to VulnReach</div>
-    <button class="panel-close" onclick="hideLoginModal()">✕</button>
-  </div>
-  <div style="padding:1.25rem">
-    <div class="form-group">
-      <label class="form-label">Username</label>
-      <input class="form-input" id="login-username" placeholder="admin" autocomplete="username" />
-    </div>
-    <div class="form-group" style="margin-top:0.75rem">
-      <label class="form-label">Password</label>
-      <input class="form-input" id="login-password" type="password" placeholder="password" autocomplete="current-password"
-             onkeydown="if(event.key==='Enter')doLogin()" />
-    </div>
-    <div id="login-error" style="font-size:0.75rem;color:var(--red);margin-top:0.5rem;min-height:1.1em"></div>
-    <button class="btn-primary" style="width:100%;margin-top:0.75rem" onclick="doLogin()">Sign in</button>
-  </div>
-</div>
-
 <!-- Scan detail panel -->
 <div class="panel-overlay" id="panel-overlay" onclick="closePanel()"></div>
 <div class="detail-panel" id="detail-panel">
-  <div class="panel-header">
+  <div class="panel-header" id="panel-drag-handle">
     <div class="panel-title" id="panel-title">Scan Detail</div>
-    <button class="panel-close" onclick="closePanel()">✕</button>
+    <div class="panel-actions">
+      <button class="panel-btn" id="panel-max-btn" onclick="toggleMaxPanel()" title="Maximise">
+        <i class="fas fa-expand"></i>
+      </button>
+      <button class="panel-close" onclick="closePanel()">✕</button>
+    </div>
   </div>
   <div class="panel-body">
     <div class="tab-bar">

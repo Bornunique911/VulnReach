@@ -26,6 +26,16 @@ class RuntimeSettings(BaseModel):
     ebpf: EbpfSettings = EbpfSettings()
 
 
+class OpenAPIGeneratorSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    provider: str = "anthropic"
+    model: str = "claude-sonnet-4-20250514"
+    api_key_env: str = "ANTHROPIC_API_KEY"
+    max_tokens: int = 4096
+
+
 class IntelligentDastSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -45,6 +55,7 @@ class ScanSettings(BaseModel):
     static_reachability: bool = True
     tools: List[str] = ["trivy", "tainter"]
     runtime: RuntimeSettings = RuntimeSettings()
+    openapi_generator: OpenAPIGeneratorSettings = OpenAPIGeneratorSettings()
     intelligent_dast: IntelligentDastSettings = IntelligentDastSettings()
 
 

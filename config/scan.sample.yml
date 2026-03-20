@@ -18,6 +18,21 @@ scan:
       enabled: false       # set to true for non-invasive eBPF tracing (Linux only)
       mode: openat         # "openat" (portable) or "usdt" (requires Python+dtrace)
       tracer: bpftrace     # "bpftrace" or "bcc" — must be installed on the host
+  openapi_generator:
+    enabled: false           # set to true to auto-generate OpenAPI spec via LLM
+    provider: anthropic      # "anthropic" | "openai"
+    model: claude-sonnet-4-20250514
+    api_key_env: ANTHROPIC_API_KEY
+    max_tokens: 4096
+  intelligent_dast:
+    enabled: false           # set to true for Claude-steered DAST (SQLi v1)
+    provider: anthropic      # "anthropic" | "openai" | "ollama"
+    model: claude-sonnet-4-20250514
+    api_key_env: ANTHROPIC_API_KEY
+    base_url: ""             # auto-detect from runtime.container_port if empty
+    ollama_base_url: "http://localhost:11434"
+    max_iter: 5
+    auth_credentials: ""     # optional "user:pass" for target app authentication
 
 risk:
   exposure: public

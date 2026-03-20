@@ -1,0 +1,56 @@
+version: "3.9"
+
+# Full 3-tier stack: Nginx → Django API → PostgreSQL
+# Run: docker compose up --build
+
+services:
+
+  # ── Tier 1: Nginx reverse proxy + static frontend ──────────────────────
+  frontend:
+    image: nginx:1.25-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./frontend:/usr/share/nginx/html:ro
+    depends_on:
+      - backend
+    networks:
+      - devblog
+
+  # ── Tier 2: Django REST API ─────────────────────────────────────────────
+  backend:
+    build: .
+    environment:
+      DJANGO_SETTINGS_MODULE: devblog.settings
+      DATABASE_URL: postgresql://devblog:devblog@db:5432/devblog
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - devblog
+
+  # ── Tier 3: PostgreSQL ──────────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: devblog
+      POSTGRES_USER: devblog
+      POSTGRES_PASSWORD: devblog
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devblog"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - devblog
+
+volumes:
+  pgdata:
+
+networks:
+  devblog:

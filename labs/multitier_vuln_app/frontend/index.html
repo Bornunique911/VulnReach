@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DevBlog — Vulnerable Demo App</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+    header { background: #1e293b; border-bottom: 1px solid #334155; padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; }
+    header h1 { font-size: 1.4rem; color: #f8fafc; }
+    .badge { background: #dc2626; color: #fff; font-size: 0.65rem; font-weight: 700; padding: 2px 6px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+    main { max-width: 960px; margin: 2rem auto; padding: 0 1.5rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 1.25rem; }
+    .card h2 { font-size: 0.9rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.75rem; }
+    .card h3 { font-size: 1rem; color: #f1f5f9; margin-bottom: 0.5rem; }
+    .vuln-tag { display: inline-block; background: #7c3aed22; color: #a78bfa; border: 1px solid #7c3aed44; border-radius: 4px; font-size: 0.7rem; padding: 1px 6px; margin-bottom: 0.5rem; }
+    .endpoint { font-size: 0.78rem; color: #64748b; font-family: monospace; margin-bottom: 0.75rem; }
+    textarea, input[type=text] { width: 100%; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 4px; padding: 0.5rem; font-size: 0.82rem; font-family: monospace; resize: vertical; }
+    textarea { min-height: 80px; }
+    button { background: #3b82f6; color: #fff; border: none; border-radius: 4px; padding: 0.45rem 1rem; cursor: pointer; font-size: 0.82rem; margin-top: 0.5rem; }
+    button:hover { background: #2563eb; }
+    pre { background: #0f172a; border: 1px solid #334155; border-radius: 4px; padding: 0.75rem; font-size: 0.72rem; overflow-x: auto; white-space: pre-wrap; max-height: 150px; overflow-y: auto; margin-top: 0.5rem; color: #86efac; }
+    .full-width { grid-column: 1 / -1; }
+    label { font-size: 0.78rem; color: #94a3b8; display: block; margin-bottom: 0.25rem; }
+    footer { text-align: center; color: #475569; font-size: 0.75rem; padding: 2rem; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>DevBlog API Tester</h1>
+    <span class="badge">Vulnerable Demo</span>
+    <span style="color:#64748b;font-size:0.8rem;margin-left:auto">VulnReach Lab — do not deploy in production</span>
+  </header>
+
+  <main>
+    <!-- Health -->
+    <div class="card">
+      <h2>System</h2>
+      <h3>Health Check</h3>
+      <div class="endpoint">GET /api/health/</div>
+      <button onclick="req('GET','/api/health/','health-out')">Check</button>
+      <pre id="health-out">—</pre>
+    </div>
+
+    <!-- Create Post (Markdown) -->
+    <div class="card">
+      <h2>Posts</h2>
+      <h3>Create Post</h3>
+      <span class="vuln-tag">Markdown XSS</span>
+      <div class="endpoint">POST /api/posts/</div>
+      <label>JSON body</label>
+      <textarea id="post-body">{"title":"Hello","slug":"hello","content":"# Hello\n\n<script>alert(1)</script>","author":"alice"}</textarea>
+      <button onclick="req('POST','/api/posts/','post-out',document.getElementById('post-body').value)">Create</button>
+      <pre id="post-out">—</pre>
+    </div>
+
+    <!-- YAML Import -->
+    <div class="card">
+      <h2>Posts</h2>
+      <h3>Import from YAML</h3>
+      <span class="vuln-tag">PyYAML unsafe load</span>
+      <div class="endpoint">POST /api/posts/import/</div>
+      <label>YAML body</label>
+      <textarea id="yaml-body">- title: Imported Post
+  slug: imported-post
+  content: Hello from YAML
+  author: yaml-bot</textarea>
+      <button onclick="reqRaw('POST','/api/posts/import/','yaml-out',document.getElementById('yaml-body').value,'application/octet-stream')">Import</button>
+      <pre id="yaml-out">—</pre>
+    </div>
+
+    <!-- Link Preview -->
+    <div class="card">
+      <h2>HTTP</h2>
+      <h3>Link Preview (SSRF)</h3>
+      <span class="vuln-tag">requests SSRF</span>
+      <div class="endpoint">GET /api/fetch-preview/?url=</div>
+      <label>URL</label>
+      <input type="text" id="preview-url" value="http://example.com" />
+      <button onclick="req('GET','/api/fetch-preview/?url='+encodeURIComponent(document.getElementById('preview-url').value),'preview-out')">Fetch</button>
+      <pre id="preview-out">—</pre>
+    </div>
+
+    <!-- JWT Auth -->
+    <div class="card">
+      <h2>Auth</h2>
+      <h3>Issue JWT Token</h3>
+      <span class="vuln-tag">PyJWT algorithm confusion</span>
+      <div class="endpoint">POST /api/auth/token/</div>
+      <label>Username</label>
+      <input type="text" id="jwt-user" value="alice" />
+      <button onclick="req('POST','/api/auth/token/','jwt-out',JSON.stringify({username:document.getElementById('jwt-user').value}))">Get Token</button>
+      <pre id="jwt-out">—</pre>
+    </div>
+
+    <!-- HTML Sanitise -->
+    <div class="card">
+      <h2>Content</h2>
+      <h3>Sanitise HTML</h3>
+      <span class="vuln-tag">bleach mXSS</span>
+      <div class="endpoint">POST /api/content/sanitize/</div>
+      <label>HTML</label>
+      <textarea id="html-input"><p>Hello <b>world</b> <script>evil()</script></p></textarea>
+      <button onclick="req('POST','/api/content/sanitize/','sanitize-out',JSON.stringify({html:document.getElementById('html-input').value}))">Sanitise</button>
+      <pre id="sanitize-out">—</pre>
+    </div>
+
+    <!-- RSS Feed Parser -->
+    <div class="card">
+      <h2>Feed</h2>
+      <h3>Parse RSS/Atom (XXE)</h3>
+      <span class="vuln-tag">lxml XXE</span>
+      <div class="endpoint">POST /api/feed/parse/</div>
+      <label>XML</label>
+      <textarea id="xml-input"><?xml version="1.0"?><rss><channel><item><title>Post 1</title><link>http://example.com</link></item></channel></rss></textarea>
+      <button onclick="req('POST','/api/feed/parse/','feed-out',JSON.stringify({xml:document.getElementById('xml-input').value}))">Parse</button>
+      <pre id="feed-out">—</pre>
+    </div>
+
+    <!-- Backup Export -->
+    <div class="card">
+      <h2>Backup</h2>
+      <h3>Export (cryptography)</h3>
+      <span class="vuln-tag">hardcoded Fernet key</span>
+      <div class="endpoint">GET /api/backup/export/</div>
+      <button onclick="req('GET','/api/backup/export/','backup-out')">Export</button>
+      <pre id="backup-out">—</pre>
+    </div>
+  </main>
+
+  <footer>DevBlog — intentionally vulnerable · VulnReach lab environment</footer>
+
+  <script>
+    async function req(method, url, outId, body, ct) {
+      const opts = { method, headers: {} };
+      if (body) { opts.body = body; opts.headers['Content-Type'] = ct || 'application/json'; }
+      try {
+        const r = await fetch(url, opts);
+        const text = await r.text();
+        let pretty;
+        try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch { pretty = text; }
+        document.getElementById(outId).textContent = pretty;
+      } catch (e) { document.getElementById(outId).textContent = 'Error: ' + e.message; }
+    }
+    async function reqRaw(method, url, outId, body, ct) { req(method, url, outId, body, ct); }
+  </script>
+</body>
+</html>

@@ -13,39 +13,63 @@ const TOOL_DEFS = {
 };
 
 // ─── Auth state ────────────────────────────────────────────────────────────
+// Token survives page reloads via sessionStorage.
+// On server restart (file change during dev), boot_id changes → auto-logout.
 let authToken = sessionStorage.getItem('vr_token') || null;
+let _loggedInUsername = sessionStorage.getItem('vr_user') || '';
 
 function isLoggedIn() { return !!authToken; }
 
 function setAuthToken(token) {
   authToken = token;
-  if (token) sessionStorage.setItem('vr_token', token);
-  else sessionStorage.removeItem('vr_token');
+  if (token) {
+    sessionStorage.setItem('vr_token', token);
+    sessionStorage.setItem('vr_user', _loggedInUsername);
+  } else {
+    sessionStorage.removeItem('vr_token');
+    sessionStorage.removeItem('vr_user');
+    sessionStorage.removeItem('vr_boot_id');
+  }
   updateAuthUI();
 }
 
+// Check if the server restarted (new boot_id) — if so, force logout
+async function checkBootId() {
+  try {
+    const res = await fetch(API + '/health');
+    if (!res.ok) return;
+    const data = await res.json();
+    const prevBoot = sessionStorage.getItem('vr_boot_id');
+    if (prevBoot && data.boot_id && prevBoot !== data.boot_id) {
+      // Server restarted — clear session
+      authToken = null;
+      _loggedInUsername = '';
+      sessionStorage.removeItem('vr_token');
+      sessionStorage.removeItem('vr_user');
+      sessionStorage.removeItem('vr_boot_id');
+      updateAuthUI();
+      toast('Server restarted — please sign in again', 'info');
+      return;
+    }
+    if (data.boot_id) sessionStorage.setItem('vr_boot_id', data.boot_id);
+  } catch(e) { /* server unreachable — leave state as-is */ }
+}
+
 function updateAuthUI() {
-  const banner = document.getElementById('auth-banner');
-  const btn = document.getElementById('auth-btn');
+  const loginPage = document.getElementById('login-page');
+  const appLayout = document.getElementById('app-layout');
+  const topbar = document.getElementById('topbar');
   if (isLoggedIn()) {
-    if (banner) banner.style.display = 'none';
-    if (btn) { btn.textContent = '⏻ Sign out'; btn.onclick = doLogout; }
+    loginPage.style.display = 'none';
+    appLayout.style.display = '';
+    topbar.style.display = '';
+    const un = document.getElementById('profile-username');
+    if (un) un.textContent = _loggedInUsername || 'user';
   } else {
-    if (banner) banner.style.display = '';
-    if (btn) { btn.textContent = '⚿ Sign in'; btn.onclick = showLoginModal; }
+    loginPage.style.display = '';
+    appLayout.style.display = 'none';
+    topbar.style.display = 'none';
   }
-}
-
-function showLoginModal() {
-  document.getElementById('login-overlay').classList.add('open');
-  document.getElementById('login-modal').classList.add('open');
-  document.getElementById('login-error').textContent = '';
-  document.getElementById('login-username').focus();
-}
-
-function hideLoginModal() {
-  document.getElementById('login-overlay').classList.remove('open');
-  document.getElementById('login-modal').classList.remove('open');
 }
 
 async function doLogin() {
@@ -65,20 +89,24 @@ async function doLogin() {
       return;
     }
     const data = await res.json();
+    _loggedInUsername = username;
     setAuthToken(data.access_token);
-    hideLoginModal();
+    // Store current boot_id so we detect server restarts
+    try {
+      const h = await fetch(API + '/health');
+      if (h.ok) { const hd = await h.json(); if (hd.boot_id) sessionStorage.setItem('vr_boot_id', hd.boot_id); }
+    } catch(e) {}
     toast('Signed in', 'success');
     loadScans();
+    startAutoRefresh();
   } catch (e) {
-    errEl.textContent = 'Cannot reach API';
+    errEl.textContent = 'Cannot reach API — is the server running?';
   }
 }
 
 function doLogout() {
   setAuthToken(null);
   scans = [];
-  renderScans();
-  updateStats();
   toast('Signed out', 'info');
 }
 
@@ -117,11 +145,17 @@ function groupByRepo(scanList) {
 
 // ─── Init ──────────────────────────────────────────────────────────────────
 (async () => {
-  updateAuthUI();
   buildToolChips();
   buildToolsPage();
-  await loadScans();
-  startAutoRefresh();
+  // Check if server restarted since last session
+  if (isLoggedIn()) {
+    await checkBootId();
+  }
+  updateAuthUI();
+  if (isLoggedIn()) {
+    await loadScans();
+    startAutoRefresh();
+  }
 })();
 
 // ─── Navigation ────────────────────────────────────────────────────────────
@@ -210,6 +244,22 @@ function buildFindings(scan) {
     // Support both new schema (finding_type + evidence{}) and legacy flat schema
     const ev = c.evidence || {};
     const findingType = c.finding_type || c.evidence_type || null;
+
+    // DAST findings carry their own evidence structure
+    if (findingType === 'dast') {
+      return {
+        cve_id:            c.cve_id,
+        verdict:           c.verdict,
+        risk_score:        c.risk_score,
+        priority:          c.priority,
+        confidence:        c.confidence,
+        finding_type:      'dast',
+        severity:          ev.severity || 'HIGH',
+        evidence:          ev,
+        iterations_used:   ev.iterations_used || null,
+      };
+    }
+
     return {
       cve_id:            c.cve_id,
       verdict:           c.verdict,
@@ -228,6 +278,7 @@ function buildFindings(scan) {
       function:          ev.function || r.function || null,
       package:           v.package  || null,
       severity:          v.severity || null,
+      fix_version:       v.fix_version || v.fixed_version || null,
     };
   });
 }
@@ -242,25 +293,13 @@ async function loadScans() {
     document.getElementById('nav-count').textContent = Object.keys(groupByRepo(scans)).length;
     document.getElementById('api-status').textContent = 'API connected';
   } catch(e) {
-    renderMockScans();
-    document.getElementById('api-status').textContent = 'API offline (demo)';
+    scans = [];
+    renderScans();
+    updateStats();
+    document.getElementById('api-status').textContent = 'API offline';
   }
 }
 
-function renderMockScans() {
-  scans = [
-    { scan_id:'sc-a1b2c3d4', repo_path:'/app/payment-service', tools:['trivy','tainter','semgrep'], status:'completed', started_at:'2025-02-28T09:12:00Z', findings_count: 7 },
-    { scan_id:'sc-a1b2c3d5', repo_path:'/app/payment-service', tools:['trivy','tainter'], status:'completed', started_at:'2025-02-27T08:00:00Z', findings_count: 5 },
-    { scan_id:'sc-e5f6a7b8', repo_url:'https://github.com/org/api-gateway', tools:['git','trivy','python_reachability'], status:'running', started_at:'2025-02-28T10:55:00Z', findings_count: null },
-    { scan_id:'sc-c9d0e1f2', repo_path:'/app/auth-service', tools:['trivy','tainter','dynamic_reachability'], status:'partial', started_at:'2025-02-27T16:30:00Z', findings_count: 3 },
-    { scan_id:'sc-k7l8m9n0', repo_url:'https://github.com/org/ml-service', tools:['git','trivy','tainter','python_reachability'], status:'pending', started_at:'2025-02-28T11:10:00Z', findings_count: null },
-    { scan_id:'sc-x1y2z3w4', repo_path:'/app/checkout-service', tools:['trivy','tainter'], status:'blocked', started_at:'2025-02-28T12:00:00Z', findings_count: 2 },
-    { scan_id:'sc-x1y2z3w5', repo_path:'/app/checkout-service', tools:['trivy','tainter'], status:'completed', started_at:'2025-02-27T10:00:00Z', findings_count: 1 },
-  ];
-  renderScans();
-  updateStats();
-  document.getElementById('nav-count').textContent = Object.keys(groupByRepo(scans)).length;
-}
 
 function renderScans() {
   const body = document.getElementById('scans-body');
@@ -391,12 +430,9 @@ async function launchScan() {
     toast(`Scan started: ${res.scan_id}`, 'success');
     setTimeout(() => { setPage('scans'); loadScans(); hideProgress(); }, 1500);
   } catch(e) {
-    // Demo mode — fake a pending scan
-    const fakeId = 'sc-' + Math.random().toString(36).slice(2,10);
-    showProgress(100, 'Demo: Scan queued — ID: ' + fakeId);
-    toast(`Demo scan started: ${fakeId}`, 'info');
-    scans.unshift({ scan_id: fakeId, repo_path, repo_url, tools:[...selectedTools], status:'pending', started_at: new Date().toISOString() });
-    setTimeout(() => { setPage('scans'); renderScans(); updateStats(); hideProgress(); }, 1500);
+    showProgress(0, '');
+    hideProgress();
+    toast('Failed to launch scan: ' + e.message, 'error');
   } finally {
     btn.disabled = false;
     btn.innerHTML = '▶ Launch Scan';
@@ -449,9 +485,101 @@ async function openPanel(scanId) {
 }
 
 function closePanel() {
+  const panel = document.getElementById('detail-panel');
   document.getElementById('panel-overlay').classList.remove('open');
-  document.getElementById('detail-panel').classList.remove('open');
+  panel.classList.remove('open', 'dragging', 'maximised');
+  panel.style.width = '';
+  _updateMaxIcon();
 }
+
+function toggleMaxPanel() {
+  const panel = document.getElementById('detail-panel');
+  if (!panel.classList.contains('open')) return;
+  panel.classList.toggle('maximised');
+  if (panel.classList.contains('maximised')) {
+    panel.style.width = '';
+  }
+  _updateMaxIcon();
+}
+
+function _updateMaxIcon() {
+  const btn = document.getElementById('panel-max-btn');
+  if (!btn) return;
+  const panel = document.getElementById('detail-panel');
+  const icon = btn.querySelector('i');
+  if (panel.classList.contains('maximised')) {
+    icon.className = 'fas fa-compress';
+    btn.title = 'Restore';
+  } else {
+    icon.className = 'fas fa-expand';
+    btn.title = 'Maximise';
+  }
+}
+
+// ─── Sidebar toggle ──────────────────────────────────────────────────────
+function toggleSidebar() {
+  document.getElementById('app-layout').classList.toggle('sidebar-collapsed');
+}
+
+// ─── Profile menu ─────────────────────────────────────────────────────────
+function toggleProfileMenu(event) {
+  event.stopPropagation();
+  document.getElementById('profile-menu').classList.toggle('open');
+}
+document.addEventListener('click', () => {
+  const menu = document.getElementById('profile-menu');
+  if (menu) menu.classList.remove('open');
+});
+
+// ─── Resizable panel (drag left edge to widen) ───────────────────────────
+(function() {
+  let resizing = false, startX = 0, startW = 0;
+  const MIN_W = 400;
+
+  document.addEventListener('mousemove', function(e) {
+    const panel = document.getElementById('detail-panel');
+    if (!panel || !panel.classList.contains('open')) return;
+    if (panel.classList.contains('maximised')) { document.body.style.cursor = ''; return; }
+
+    if (resizing) {
+      const delta = startX - e.clientX;
+      const newW = Math.max(MIN_W, Math.min(window.innerWidth - 20, startW + delta));
+      panel.style.width = newW + 'px';
+      return;
+    }
+
+    // Show resize cursor when hovering near the left edge of the panel
+    const rect = panel.getBoundingClientRect();
+    if (Math.abs(e.clientX - rect.left) < 6 && e.clientY >= rect.top && e.clientY <= rect.bottom) {
+      document.body.style.cursor = 'ew-resize';
+    } else {
+      document.body.style.cursor = '';
+    }
+  });
+
+  document.addEventListener('mousedown', function(e) {
+    const panel = document.getElementById('detail-panel');
+    if (!panel || !panel.classList.contains('open')) return;
+    if (panel.classList.contains('maximised')) return;
+
+    const rect = panel.getBoundingClientRect();
+    if (Math.abs(e.clientX - rect.left) < 6 && e.clientY >= rect.top && e.clientY <= rect.bottom) {
+      resizing = true;
+      startX = e.clientX;
+      startW = rect.width;
+      panel.classList.add('dragging');
+      e.preventDefault();
+    }
+  });
+
+  document.addEventListener('mouseup', function() {
+    if (!resizing) return;
+    resizing = false;
+    document.body.style.cursor = '';
+    const panel = document.getElementById('detail-panel');
+    if (panel) panel.classList.remove('dragging');
+  });
+})();
 
 function setTab(name, el) {
   currentTab = name;
@@ -487,10 +615,7 @@ function renderPanelOverview(scan) {
 }
 
 function renderPanelFindings(scan) {
-  // Use real normalised findings; fall back to demo data only when API is offline
-  const findings = (scan.findings && scan.findings.length)
-    ? scan.findings
-    : generateMockFindings(scan.scan_id);
+  const findings = scan.findings || [];
 
   const el = document.getElementById('tab-findings');
   if (!findings.length) {
@@ -502,100 +627,217 @@ function renderPanelFindings(scan) {
     return;
   }
 
-  // Summary bar
+  // Split DAST findings from package findings
+  const dastFindings = findings.filter(f => f.finding_type === 'dast');
+  const pkgFindings  = findings.filter(f => f.finding_type !== 'dast');
+
+  // Summary bar — count all (normalise verdict buckets)
+  const _confirmedVerdicts = new Set(['CONFIRMED','STATICALLY_REACHABLE','DYNAMICALLY_CONFIRMED','DYNAMICALLY_REACHABLE']);
+  const _notReachVerdicts  = new Set(['NOT_OBSERVED','NOT_REACHABLE','UNREACHABLE']);
   const counts = { CONFIRMED:0, LIKELY:0, POSSIBLE:0, NOT_OBSERVED:0 };
-  for (const f of findings) counts[f.verdict] = (counts[f.verdict]||0) + 1;
+  for (const f of findings) {
+    const v = f.verdict || 'NOT_OBSERVED';
+    if (_confirmedVerdicts.has(v))     counts.CONFIRMED++;
+    else if (v === 'LIKELY')           counts.LIKELY++;
+    else if (v === 'POSSIBLE')         counts.POSSIBLE++;
+    else if (_notReachVerdicts.has(v))  counts.NOT_OBSERVED++;
+    else                               counts.LIKELY++;  // fallback
+  }
+  const notReachCount = counts.NOT_OBSERVED;
   const summaryBar = `
     <div class="findings-summary">
-      ${counts.CONFIRMED   ? `<span class="fsumm red">  ● ${counts.CONFIRMED}   CONFIRMED</span>`   : ''}
-      ${counts.LIKELY      ? `<span class="fsumm amber">● ${counts.LIKELY}      LIKELY</span>`      : ''}
-      ${counts.POSSIBLE    ? `<span class="fsumm blue"> ● ${counts.POSSIBLE}    POSSIBLE</span>`    : ''}
-      ${counts.NOT_OBSERVED? `<span class="fsumm dim">  ● ${counts.NOT_OBSERVED} NOT OBSERVED</span>`: ''}
+      ${counts.CONFIRMED   ? `<span class="fsumm red">  ● ${counts.CONFIRMED} CONFIRMED</span>`   : ''}
+      ${counts.LIKELY      ? `<span class="fsumm amber">● ${counts.LIKELY} LIKELY</span>`      : ''}
+      ${counts.POSSIBLE    ? `<span class="fsumm blue"> ● ${counts.POSSIBLE} POSSIBLE</span>`    : ''}
+      ${notReachCount       ? `<span class="fsumm dim">  ● ${notReachCount} Not Reachable</span>`: ''}
     </div>`;
 
-  el.innerHTML = summaryBar + findings.map(f => {
-    const verdict      = f.verdict || 'NOT_OBSERVED';
-    const findingType  = f.finding_type || null;
-    const isDynamic    = findingType === 'dynamic';
-    const isStatic     = findingType === 'static';
-    const isSemgrep    = findingType === 'semgrep';
-    const severityCol  = { CRITICAL:'var(--red)', HIGH:'var(--amber)', MEDIUM:'var(--blue)', LOW:'var(--text-dim)' }[f.severity] || 'var(--text-dim)';
-    const scoreBar     = f.risk_score != null
-      ? `<div class="risk-bar-wrap"><div class="risk-bar" style="width:${Math.min(f.risk_score/10*100,100)}%;background:${f.risk_score>=5?'var(--red)':f.risk_score>=3?'var(--amber)':'var(--green)'}"></div></div>`
-      : '';
+  // ── DAST section ──────────────────────────────────────────────────
+  let dastHtml = '';
+  if (dastFindings.length) {
+    const dastConfirmed = dastFindings.filter(f => f.verdict === 'CONFIRMED').length;
+    const ev = dastFindings[0].evidence || dastFindings[0];
+    const vulnClass = (ev.vuln_class || 'sql_injection').replace(/_/g, ' ').toUpperCase();
 
-    // Dynamic findings: taint-flow + coverage chain
-    // Static findings:  import → call-chain → sink chain
-    let chain;
-    if (isDynamic) {
-      chain = [
-        { label: 'Taint flow',    hit: f.has_taint_flow,  tip: 'Tainter traced a source-to-sink taint flow for this package' },
-        { label: 'Runtime hit',   hit: f.has_coverage_hit, tip: 'Package executed at runtime (dynamic coverage confirmed)' },
-      ].map((step, i) => `
-        <div class="chain-step ${step.hit ? 'hit' : 'miss'}" title="${step.tip}">
-          <span class="chain-dot">${step.hit ? '●' : '○'}</span>
-          <span class="chain-label">${step.label}</span>
-          ${i < 1 ? '<span class="chain-arrow">→</span>' : ''}
-        </div>
-      `).join('');
-    } else {
-      chain = [
-        { label: 'Import',     hit: f.import_detected,   tip: 'Package is imported in the codebase' },
-        { label: 'Call chain', hit: f.call_chain_exists,  tip: 'Call chain traced to vulnerable function' },
-        { label: 'Sink hit',   hit: f.sink_reachable,     tip: 'Sink statically reachable' },
-      ].map((step, i) => `
-        <div class="chain-step ${step.hit ? 'hit' : 'miss'}" title="${step.tip}">
-          <span class="chain-dot">${step.hit ? '●' : '○'}</span>
-          <span class="chain-label">${step.label}</span>
-          ${i < 2 ? '<span class="chain-arrow">→</span>' : ''}
-        </div>
-      `).join('');
+    dastHtml = `
+    <div class="dast-section">
+      <div class="dast-header">
+        <span class="dast-title">INTELLIGENT DAST — ${vulnClass} (${dastConfirmed} CONFIRMED)</span>
+      </div>
+      ${dastFindings.map(df => {
+        const de = df.evidence || df;
+        const sev = de.severity || df.severity || 'HIGH';
+        const sevCol = { CRITICAL:'var(--red)', HIGH:'var(--amber)', MEDIUM:'var(--blue)', LOW:'var(--text-dim)' }[sev] || 'var(--amber)';
+        return `
+        <div class="dast-finding">
+          <div class="dast-finding-row">
+            <span class="sev-chip" style="color:${sevCol}">${sev}</span>
+            <span style="font-weight:600;color:var(--text)">${(de.vuln_class||'sql_injection').replace(/_/g,' ').toUpperCase()}</span>
+            <span class="verdict-badge CONFIRMED" style="margin-left:auto">CONFIRMED</span>
+          </div>
+          <div class="dast-meta-grid">
+            <div class="dast-meta-item"><span class="dast-meta-key">ENDPOINT</span><span class="dast-meta-val">${de.endpoint || '—'}</span></div>
+            <div class="dast-meta-item"><span class="dast-meta-key">ITERATIONS</span><span class="dast-meta-val">${df.iterations_used || '—'}</span></div>
+            <div class="dast-meta-item"><span class="dast-meta-key">COVERAGE DELTA</span><span class="dast-meta-val">${(de.files||[]).length}</span></div>
+            <div class="dast-meta-item"><span class="dast-meta-key">METHOD</span><span class="dast-meta-val">${(de.confirmation_method||'—').replace(/_/g,' ')}</span></div>
+          </div>
+          ${de.payload ? `<div class="dast-payload"><code>${escHtml(de.payload)}</code></div>` : ''}
+          ${de.reasoning ? `<div class="dast-reasoning">${escHtml(de.reasoning)}</div>` : ''}
+        </div>`;
+      }).join('')}
+    </div>`;
+  }
+
+  // ── Package findings table ────────────────────────────────────────
+  // Group by package — merge CVEs per package
+  const pkgMap = {};
+  for (const f of pkgFindings) {
+    const pkg = f.package || f.cve_id || 'unknown';
+    if (!pkgMap[pkg]) pkgMap[pkg] = { ...f, cves: [], allFiles: [] };
+    if (f.cve_id) pkgMap[pkg].cves.push(f.cve_id);
+    if (f.files) pkgMap[pkg].allFiles.push(...f.files);
+    // Upgrade verdict: CONFIRMED > LIKELY > POSSIBLE > NOT_OBSERVED
+    const rank = { CONFIRMED:4, LIKELY:3, POSSIBLE:2, NOT_OBSERVED:1 };
+    if ((rank[f.verdict]||0) > (rank[pkgMap[pkg].verdict]||0)) {
+      pkgMap[pkg].verdict = f.verdict;
+      pkgMap[pkg].confidence = f.confidence;
+      pkgMap[pkg].risk_score = f.risk_score;
+    }
+    // Merge evidence
+    if (f.import_detected) pkgMap[pkg].import_detected = true;
+    if (f.call_chain_exists) pkgMap[pkg].call_chain_exists = true;
+    if (f.sink_reachable) pkgMap[pkg].sink_reachable = true;
+    if (f.has_taint_flow) pkgMap[pkg].has_taint_flow = true;
+    if (f.has_coverage_hit) pkgMap[pkg].has_coverage_hit = true;
+    // Collect functions
+    if (f.function) {
+      if (!pkgMap[pkg].allFunctions) pkgMap[pkg].allFunctions = [];
+      pkgMap[pkg].allFunctions.push(f.function);
+    }
+    // Track finding types for status line
+    if (f.finding_type) {
+      if (!pkgMap[pkg].findingTypes) pkgMap[pkg].findingTypes = new Set();
+      pkgMap[pkg].findingTypes.add(f.finding_type);
+    }
+  }
+
+  const pkgCards = Object.entries(pkgMap).map(([pkg, f]) => {
+    const verdict = f.verdict || 'NOT_OBSERVED';
+    const verdictMap = {
+      'CONFIRMED':             { label: 'CONFIRMED',             cls: 'CONFIRMED' },
+      'LIKELY':                { label: 'LIKELY',                 cls: 'LIKELY' },
+      'POSSIBLE':              { label: 'POSSIBLE',              cls: 'POSSIBLE' },
+      'NOT_OBSERVED':          { label: 'NOT REACHABLE',         cls: 'not-reachable' },
+      'STATICALLY_REACHABLE':  { label: 'STATICALLY REACHABLE',  cls: 'CONFIRMED' },
+      'DYNAMICALLY_CONFIRMED': { label: 'DYNAMICALLY CONFIRMED', cls: 'CONFIRMED' },
+      'DYNAMICALLY_REACHABLE': { label: 'DYNAMICALLY REACHABLE', cls: 'DYNAMICALLY_REACHABLE' },
+      'NOT_REACHABLE':         { label: 'NOT REACHABLE',         cls: 'not-reachable' },
+      'UNREACHABLE':           { label: 'UNREACHABLE',           cls: 'not-reachable' },
+    };
+    const vm = verdictMap[verdict] || { label: verdict.replace(/_/g, ' '), cls: 'LIKELY' };
+    const isReachable = _confirmedVerdicts.has(verdict) || verdict === 'LIKELY';
+    const cardBorder = isReachable ? 'reachable' : 'not-reachable';
+
+    // Severity chip
+    const sev = (f.severity || '').toUpperCase();
+    const sevCls = sev ? `sev-chip-sm ${sev.toLowerCase()}` : '';
+    const sevHtml = sev ? `<span class="${sevCls}">${sev}</span>` : '';
+
+    // --- Status line ---
+    const fTypes = f.findingTypes || new Set();
+    let statusLabel = 'Not Imported';
+    let statusCls = 'status-none';
+    if (fTypes.has('dynamic') || f.has_coverage_hit) {
+      statusLabel = 'Dynamically Reachable';
+      statusCls = 'status-dynamic';
+    } else if (fTypes.has('static') || f.call_chain_exists || f.sink_reachable) {
+      statusLabel = 'Statically Reachable';
+      statusCls = 'status-static';
+    } else if (f.import_detected) {
+      statusLabel = 'Imported';
+      statusCls = 'status-imported';
     }
 
-    const findingTypeBadge = findingType
-      ? `<span class="evidence-badge ${findingType}">${isDynamic ? '◉ dynamic' : isStatic ? '◧ static' : '§ semgrep'}</span>`
-      : '<span class="evidence-badge none">no evidence</span>';
+    // --- Path section (only show what we actually know) ---
+    const pathChecks = [];
+    if (f.import_detected)   pathChecks.push({ hit: true, text: 'Package imported in application code' });
+    if (f.call_chain_exists) pathChecks.push({ hit: true, text: 'Call graph confirms execution path' });
+    if (f.sink_reachable)    pathChecks.push({ hit: true, text: 'Vulnerable sink is reachable' });
+    if (f.has_taint_flow)    pathChecks.push({ hit: true, text: 'Taint flow from user input to sink' });
+    if (f.has_coverage_hit)  pathChecks.push({ hit: true, text: 'Confirmed at runtime via coverage' });
+    if (!pathChecks.length)  pathChecks.push({ hit: false, text: 'No reachability evidence found' });
+    const pathHtml = pathChecks.map(p =>
+      `<div class="path-check ${p.hit ? 'hit' : 'miss'}">${p.hit ? '✔' : '✘'} ${p.text}</div>`
+    ).join('');
 
-    const filesHtml = f.files && f.files.length
-      ? `<div class="finding-files">${f.files.map(fp => `<span class="file-pill">${fp}</span>`).join('')}</div>`
+    // --- Evidence chain ---
+    const evSteps = [];
+    if (f.import_detected)   evSteps.push('Request');
+    const uniqueFiles = [...new Set(f.allFiles)].slice(0, 2);
+    if (uniqueFiles.length)  evSteps.push(uniqueFiles[0].split('/').pop());
+    evSteps.push(pkg);
+    if (f.has_taint_flow || f.sink_reachable) evSteps.push('vulnerable API');
+    if (f.sink_reachable)    evSteps.push('sink ✅');
+    const evHtml = evSteps.length > 1
+      ? evSteps.map(e => `<span class="ev-step">${e}</span>`).join('<span class="ev-arrow">→</span>')
+      : '<span class="ev-step miss">no evidence</span>';
+
+    // --- CVE badges ---
+    const cveCls = isReachable ? 'cve-badge reachable' : 'cve-badge';
+    const maxCves = 4;
+    const cveHtml = f.cves.length
+      ? f.cves.slice(0, maxCves).map(c => `<span class="${cveCls}">${escHtml(c)}</span>`).join('')
+        + (f.cves.length > maxCves ? `<span class="cve-toggle" onclick="expandCves(this,'${cveCls}')">+${f.cves.length - maxCves} more</span>` : '')
+      : '<span style="color:var(--text-mute)">—</span>';
+
+    // --- Files ---
+    const allUniqueFiles = [...new Set(f.allFiles)].slice(0, 4);
+    const filesHtml = allUniqueFiles.length
+      ? allUniqueFiles.map(fp => `<span class="file-pill">${fp}</span>`).join('')
       : '';
 
-    const fnHtml = f.function
-      ? `<div class="finding-fn"><span class="fn-label">fn</span> <code>${f.function}</code></div>`
+    // --- Functions ---
+    const funcs = [...new Set(f.allFunctions || [])].slice(0, 4);
+    const funcsHtml = funcs.length
+      ? funcs.map(fn => `<span class="func-pill">${fn}()</span>`).join('')
       : '';
+
+    // --- Fix ---
+    const fixVer = f.fix_version || f.fixed_version || '';
 
     return `
-    <div class="finding-item verdict-${verdict}">
-      <!-- Row 1: verdict + CVE + priority + package + severity + finding type -->
-      <div class="finding-header">
-        <span class="verdict-badge ${verdict}">${verdict}</span>
-        <span class="finding-cve">${f.cve_id || f.check_id || 'N/A'}</span>
-        ${f.priority ? `<span class="priority-badge ${f.priority}">${f.priority}</span>` : ''}
-        ${f.severity ? `<span class="sev-chip" style="color:${severityCol}">${f.severity}</span>` : ''}
-        ${findingTypeBadge}
-        <span class="finding-pkg">${f.package || ''}</span>
+    <div class="pkg-card ${cardBorder}">
+      <div class="pkg-card-top">
+        <span class="pkg-name">${pkg}</span>
+        ${sevHtml}
+        <span class="verdict-badge-sm ${vm.cls}">${vm.label}</span>
       </div>
 
-      <!-- Row 2: risk score bar -->
-      ${f.risk_score != null ? `
-      <div class="finding-risk-row">
-        <span class="risk-label">Risk</span>
-        <span class="risk-value" style="color:${f.risk_score>=5?'var(--red)':f.risk_score>=3?'var(--amber)':'var(--green)'}">${f.risk_score}</span>
-        ${scoreBar}
-        <span class="risk-conf">${f.confidence != null ? Math.round(f.confidence*100)+'% confidence' : ''}</span>
-      </div>` : ''}
+      <div class="pkg-card-section">
+        <div class="pkg-detail-label">Status</div>
+        <span class="status-pill ${statusCls}">${statusLabel}</span>
+      </div>
 
-      <!-- Row 3: reachability chain (dynamic=taint+coverage, static=import+callchain+sink) -->
-      ${!isSemgrep ? `
-      <div class="finding-chain">
-        <span class="chain-title">${isDynamic ? '◉ dynamic' : '◧ static'}</span>
-        <div class="chain-steps">${chain}</div>
-      </div>` : ''}
+      <div class="pkg-card-section">
+        <div class="pkg-detail-label">Path</div>
+        <div class="path-checks">${pathHtml}</div>
+      </div>
 
-      <!-- Row 4: files + function -->
-      ${filesHtml}${fnHtml}
+      <div class="pkg-card-section">
+        <div class="pkg-detail-label">Evidence</div>
+        <div class="ev-chain">${evHtml}</div>
+      </div>
+
+      <div class="pkg-card-grid">
+        ${f.cves.length ? `<div><div class="pkg-detail-label">CVEs (${f.cves.length})</div><div class="cve-list" data-cves="${escHtml(JSON.stringify(f.cves))}">${cveHtml}</div></div>` : ''}
+        ${filesHtml ? `<div><div class="pkg-detail-label">Files</div><div class="file-list">${filesHtml}</div></div>` : ''}
+        ${funcsHtml ? `<div><div class="pkg-detail-label">Functions</div><div class="func-list">${funcsHtml}</div></div>` : ''}
+        ${fixVer ? `<div><div class="pkg-detail-label">Fix</div><span class="fix-ver">Upgrade → ${fixVer}</span></div>` : ''}
+      </div>
     </div>`;
   }).join('');
+
+  el.innerHTML = summaryBar + dastHtml + pkgCards;
 }
 
 function renderPanelRaw(scan) {
@@ -633,21 +875,6 @@ async function copyRawJson(btn) {
   }
 }
 
-// Demo fallback — only used when API is offline
-function generateMockFindings(scanId) {
-  if (!scanId || scanId.includes('c9d0') || scanId.includes('k7l8')) return [];
-  return [
-    // Dynamic: taint flow confirmed + runtime coverage hit → CONFIRMED
-    { cve_id:'CVE-2024-12345', package:'pyyaml',   verdict:'CONFIRMED',    priority:'P1', finding_type:'dynamic', has_taint_flow:true,  has_coverage_hit:true,  confidence:0.95, risk_score:7.8, severity:'CRITICAL', files:['src/app.py'] },
-    // Static: import detected + call chain → LIKELY
-    { cve_id:'CVE-2024-12345', package:'pyyaml',   verdict:'LIKELY',       priority:'P2', finding_type:'static',  import_detected:true, call_chain_exists:true, sink_reachable:false, confidence:0.70, risk_score:4.68, severity:'CRITICAL', files:['src/app.py'] },
-    // Static: import only → POSSIBLE
-    { cve_id:'CVE-2024-67890', package:'requests', verdict:'POSSIBLE',     priority:'P3', finding_type:'static',  import_detected:true, call_chain_exists:false, sink_reachable:false, confidence:0.40, risk_score:2.6, severity:'HIGH', files:[] },
-    // Static: no evidence
-    { cve_id:'CVE-2023-11111', package:'pillow',   verdict:'NOT_OBSERVED', priority:'P4', finding_type:'static',  import_detected:false, call_chain_exists:false, sink_reachable:false, confidence:0.10, risk_score:1.0, severity:'LOW',  files:[] },
-  ].slice(0, scanId.includes('a1b2')?4:1);
-}
-
 // ─── Auto refresh ──────────────────────────────────────────────────────────
 function startAutoRefresh() {
   autoRefreshInterval = setInterval(() => {
@@ -655,11 +882,6 @@ function startAutoRefresh() {
       loadScans();
     }
   }, 8000);
-}
-
-// ─── Auth info ─────────────────────────────────────────────────────────────
-function showAuthInfo() {
-  setPage('api');
 }
 
 // ─── Toast ─────────────────────────────────────────────────────────────────
@@ -673,6 +895,13 @@ function toast(msg, type='info') {
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
+function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function expandCves(el, cls) {
+  const list = el.parentNode;
+  const cves = JSON.parse(list.dataset.cves || '[]');
+  list.innerHTML = cves.map(c => `<span class="${cls}">${escHtml(c)}</span>`).join('');
+}
 function truncate(s, n) { return s && s.length > n ? s.slice(0,n)+'…' : (s||'—'); }
 
 function fmtDate(iso) {

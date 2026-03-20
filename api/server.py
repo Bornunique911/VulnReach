@@ -136,9 +136,11 @@ async def list_scans(_principal: UserPrincipal = Depends(require_user)):
 
 # ── Public endpoints ─────────────────────────────────────────────
 
+_BOOT_ID = uuid.uuid4().hex
+
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "boot_id": _BOOT_ID}
 
 
 @app.get("/tools")
