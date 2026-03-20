@@ -40,3 +40,14 @@ def flush() -> None:
 
     print(json.dumps(_events))
     _events.clear()
+
+
+def flush_to_file(path: str) -> None:
+    """Write all collected events to a file as JSON and clear the buffer.
+
+    Called from sitecustomize.py atexit handler so each worker process
+    writes its own events (use a PID-specific path to avoid conflicts).
+    """
+    import pathlib
+    pathlib.Path(path).write_text(json.dumps(_events), encoding="utf-8")
+    _events.clear()

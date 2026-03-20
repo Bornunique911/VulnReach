@@ -10,10 +10,14 @@ scan:
     - dynamic_reachability
     # - semgrep  # uncomment to enable Semgrep agent
   runtime:
-    enabled: true         # set to true to enable dynamic reachability
-    timeout: 120            # max seconds to wait for container + schemathesis
+    enabled: true          # set to true to enable dynamic reachability
+    timeout: 120           # max seconds to wait for container + schemathesis
     coverage_wait: 10      # seconds to wait after traffic before collecting coverage
     container_port: 3000   # port the app runs on inside the container
+    ebpf:
+      enabled: false       # set to true for non-invasive eBPF tracing (Linux only)
+      mode: openat         # "openat" (portable) or "usdt" (requires Python+dtrace)
+      tracer: bpftrace     # "bpftrace" or "bcc" — must be installed on the host
 
 risk:
   exposure: public

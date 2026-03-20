@@ -5,6 +5,17 @@ import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 
+class EbpfSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    # "openat" traces file-open syscalls (portable, no USDT needed).
+    # "usdt"   uses Python USDT probes (requires Python built with --with-dtrace).
+    mode: str = "openat"
+    # "bpftrace" or "bcc" — whichever is installed on the host.
+    tracer: str = "bpftrace"
+
+
 class RuntimeSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -12,6 +23,7 @@ class RuntimeSettings(BaseModel):
     timeout: int = 60
     coverage_wait: int = 10
     container_port: int = 3000
+    ebpf: EbpfSettings = EbpfSettings()
 
 
 class ScanSettings(BaseModel):
