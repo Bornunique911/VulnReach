@@ -46,6 +46,7 @@
     </div>
     <div class="topbar-right">
       <div class="status-dot"><div class="dot"></div><span id="api-status">API connected</span></div>
+      <button class="theme-btn" id="theme-btn" onclick="cycleTheme()" title="Toggle theme"></button>
       <div class="profile-icon" id="profile-icon" onclick="toggleProfileMenu(event)">
         <i class="fas fa-circle-user"></i>
         <div class="profile-menu" id="profile-menu">
@@ -64,6 +65,7 @@
     </div>
   </header>
 
+  
   <div class="layout" id="app-layout" style="display:none">
     <!-- Sidebar -->
     <nav class="sidebar" id="sidebar">
@@ -216,7 +218,7 @@
               <input class="form-input" id="f-repo-url" placeholder="https://github.com/org/repo" />
             </div>
             <div class="form-group full">
-              <label class="form-label">Config Path</label>
+              <label class="form-label">Config Path <span style="color:var(--text-mute);font-weight:400">(optional when using a URL — auto-discovered or default used)</span></label>
               <input class="form-input" id="f-config-path" placeholder="/home/user/myapp/vulnreach.yaml" />
             </div>
           </div>
@@ -314,6 +316,12 @@
   <div class="panel-header" id="panel-drag-handle">
     <div class="panel-title" id="panel-title">Scan Detail</div>
     <div class="panel-actions">
+      <button class="panel-btn" id="panel-csv-btn" onclick="exportCSV(currentScan)" title="Export CSV">
+        <i class="fas fa-file-csv"></i>
+      </button>
+      <button class="panel-btn" id="panel-pdf-btn" onclick="exportPDF(currentScan && currentScan.scan_id)" title="Export PDF">
+        <i class="fas fa-file-pdf"></i>
+      </button>
       <button class="panel-btn" id="panel-max-btn" onclick="toggleMaxPanel()" title="Maximise">
         <i class="fas fa-expand"></i>
       </button>

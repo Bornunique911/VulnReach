@@ -43,7 +43,7 @@ class UsageContext:
     file_path: str
     line_number: int
     context_line: str
-    usage_type: str  # "import", "from_import", "function_call", "attribute_access"
+    usage_type: str  # "import", "from_import", "function_call", "attribute_access", "return_value"
     enclosing_function: Optional[str] = None  # Function name where this usage occurs
 
 
@@ -282,6 +282,36 @@ class PythonReachabilityAnalyzer:
                         self._add_usage(root_package, node.lineno, "attribute_access")
                 self.generic_visit(node)
 
+            def visit_Assign(self, node):
+                """Detect return value usage: result = pkg.func() or result = func()"""
+                if isinstance(node.value, ast.Call):
+                    self._check_return_value(node.value, node.lineno)
+                self.generic_visit(node)
+
+            def visit_Return(self, node):
+                """Detect return statements that propagate package call results."""
+                if node.value and isinstance(node.value, ast.Call):
+                    self._check_return_value(node.value, node.lineno)
+                self.generic_visit(node)
+
+            def _check_return_value(self, call_node, lineno):
+                """If a call's return value is captured/returned, tag it as return_value."""
+                # module.func() → return value captured
+                if isinstance(call_node.func, ast.Attribute):
+                    if isinstance(call_node.func.value, ast.Name):
+                        module_name = call_node.func.value.id
+                        if module_name in imported_modules:
+                            original_module = imported_modules[module_name]
+                            root_package = original_module.split('.')[0]
+                            self._add_usage(root_package, lineno, "return_value")
+                # func() where func is an imported name → return value captured
+                elif isinstance(call_node.func, ast.Name):
+                    func_name = call_node.func.id
+                    if func_name in imported_modules:
+                        original_module = imported_modules[func_name]
+                        root_package = original_module.split('.')[0]
+                        self._add_usage(root_package, lineno, "return_value")
+
         UsageVisitor(self).visit(tree)
 
         return usage_map
@@ -372,19 +402,26 @@ class PythonReachabilityAnalyzer:
                            if ctx.usage_type == 'function_call')
         attribute_access = sum(1 for ctx in usage_contexts
                              if ctx.usage_type == 'attribute_access')
+        return_values = sum(1 for ctx in usage_contexts
+                           if ctx.usage_type == 'return_value')
 
         # Count unique files
         files_with_usage = len(set(ctx.file_path for ctx in usage_contexts))
 
+        # Return values count as active usage (data flows through the package)
+        active_calls = function_calls + return_values
+
         # Risk assessment logic
-        if function_calls >= 5 and files_with_usage >= 3:
+        if active_calls >= 5 and files_with_usage >= 3:
             return (CriticalityLevel.CRITICAL,
-                   f"Package is actively used with {function_calls} function calls across "
+                   f"Package is actively used with {function_calls} function calls "
+                   f"and {return_values} return value captures across "
                    f"{files_with_usage} files - high impact if vulnerable")
 
-        elif function_calls > 0:
+        elif active_calls > 0:
             return (CriticalityLevel.HIGH,
-                   f"Package has {function_calls} direct function calls across "
+                   f"Package has {function_calls} direct function calls and "
+                   f"{return_values} return value captures across "
                    f"{files_with_usage} file(s) - actively used")
 
         elif files_with_usage >= 3:

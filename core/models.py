@@ -10,14 +10,13 @@ class ScanContext:
     repo_path: Optional[str] = None
     repo_url: Optional[str] = None
     repo_name: Optional[str] = None
-    clone_root: str = "scans"
-    findings_root: str = "security_findings"
     config_path: Optional[str] = None
     config: Optional[Any] = None  # Populated after config parsing
     scan_id: Optional[str] = None
     vulnerabilities: List[Dict[str, Any]] = field(default_factory=list)
     import_map: Dict[str, str] = field(default_factory=dict)
     taint_flows: List[Dict[str, Any]] = field(default_factory=list)
+    routes: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class VulnerabilityFinding(BaseModel):
@@ -37,6 +36,7 @@ class ReachabilityFinding(BaseModel):
     verdict: Optional[str] = None
     confidence: float = 0.1
     evidence_type: Optional[str] = None  # "static" or "dynamic"
+    import_time_hit: bool = False  # package loaded at import time but no function called
     function: Optional[str] = None
     files: List[Any] = Field(default_factory=list)
 

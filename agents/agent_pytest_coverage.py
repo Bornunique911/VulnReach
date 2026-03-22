@@ -105,6 +105,7 @@ class PytestCoverageAgent(BaseAgent):
             context.vulnerabilities,
             context.import_map,
             evidence_type="pytest",
+            static_findings=context.taint_flows,
         )
 
         return AgentResult(

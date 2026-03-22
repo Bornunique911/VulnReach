@@ -112,8 +112,17 @@ class DynamicReachabilityAgent(BaseTool):
                 "falling back to Dockerfile-patch coverage mode"
             )
 
-        dockerfile_path = Path(preflight["dockerfile_path"])
         openapi_path = preflight["openapi_path"]
+
+        # ------------------------------------------------------------------
+        # Dispatch: docker-compose or Dockerfile mode
+        # ------------------------------------------------------------------
+        if preflight.get("mode") == "compose":
+            return await self._run_compose_mode(
+                context, repo_path, runtime, preflight
+            )
+
+        dockerfile_path = Path(preflight["dockerfile_path"])
 
         # ------------------------------------------------------------------
         # Step 2 — Patch Dockerfile, build image, start container
@@ -226,7 +235,7 @@ class DynamicReachabilityAgent(BaseTool):
         # ------------------------------------------------------------------
         # Step 5 — Correlate static + dynamic (coverage + taint events)
         # ------------------------------------------------------------------
-        findings = self._correlate(coverage_data, context.vulnerabilities, taint_events)
+        findings = self._correlate(coverage_data, context.vulnerabilities, taint_events, static_findings=context.taint_flows, repo_path=repo_path)
 
         return AgentResult.model_validate({
             "tool_name": self.tool_name,
@@ -246,13 +255,34 @@ class DynamicReachabilityAgent(BaseTool):
     # ------------------------------------------------------------------
 
     def _preflight(self, repo_path: Path) -> Dict[str, Any]:
-        """Check that Dockerfile and an OpenAPI spec exist."""
-        dockerfile = repo_path / "Dockerfile"
-        if not dockerfile.exists():
-            reason = f"Dockerfile not found in {repo_path}"
+        """Check that Dockerfile/docker-compose and an OpenAPI spec exist.
+
+        Detection priority:
+          1. docker-compose.yml / docker-compose.yaml / compose.yml
+          2. Dockerfile
+        When a compose file is found, ``compose_path`` is set and
+        ``dockerfile_path`` may still be populated (but compose takes precedence).
+        """
+        # --- Docker detection ---
+        dockerfile: Optional[Path] = None
+        compose_path: Optional[Path] = None
+
+        for name in ("docker-compose.yml", "docker-compose.yaml", "compose.yml"):
+            candidate = repo_path / name
+            if candidate.exists():
+                compose_path = candidate
+                break
+
+        dockerfile_candidate = repo_path / "Dockerfile"
+        if dockerfile_candidate.exists():
+            dockerfile = dockerfile_candidate
+
+        if not dockerfile and not compose_path:
+            reason = f"No Dockerfile or docker-compose file found in {repo_path}"
             logger.warning(f"[dynamic][preflight] SKIP — {reason}")
             return {"passed": False, "reason": reason}
 
+        # --- OpenAPI detection ---
         openapi_path: Optional[str] = None
         for name in ("openapi.json", "openapi.yaml", "openapi.yml"):
             candidate = repo_path / name
@@ -261,22 +291,28 @@ class DynamicReachabilityAgent(BaseTool):
                 break
 
         if not openapi_path:
+            docker_desc = str(compose_path or dockerfile)
             reason = f"No openapi.json / openapi.yaml found in {repo_path}"
             logger.warning(f"[dynamic][preflight] SKIP — {reason}")
             return {
                 "passed": False,
                 "reason": reason,
-                "dockerfile_path": str(dockerfile),
+                "dockerfile_path": str(dockerfile) if dockerfile else None,
+                "compose_path": str(compose_path) if compose_path else None,
             }
 
-        logger.info(
-            f"[dynamic][preflight] PASS — Dockerfile: {dockerfile}, OpenAPI: {openapi_path}"
-        )
-        return {
+        result: Dict[str, Any] = {
             "passed": True,
-            "dockerfile_path": str(dockerfile),
             "openapi_path": openapi_path,
+            "dockerfile_path": str(dockerfile) if dockerfile else None,
+            "compose_path": str(compose_path) if compose_path else None,
+            "mode": "compose" if compose_path else "dockerfile",
         }
+        logger.info(
+            f"[dynamic][preflight] PASS — mode={result['mode']}, "
+            f"docker={compose_path or dockerfile}, OpenAPI: {openapi_path}"
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Step 2 — Patch Dockerfile + build + start
@@ -319,14 +355,26 @@ class DynamicReachabilityAgent(BaseTool):
                 continue
 
             first = cmd_args[0].lower()
-            if first in ("gunicorn", "uvicorn"):
+            # Support: gunicorn, uvicorn, python, flask, django manage.py
+            is_python_cmd = first in ("python", "python3") or first.startswith("python3.")
+            is_server_cmd = first in ("gunicorn", "uvicorn")
+            is_flask_cmd = first == "flask"
+            is_manage_py = "manage.py" in " ".join(cmd_args).lower()
+
+            if is_server_cmd or is_python_cmd or is_flask_cmd or is_manage_py:
                 found_target_cmd = True
-                logger.info(f"[dynamic][patch] Found {first} CMD — injecting coverage env")
+                logger.info(f"[dynamic][patch] Found CMD '{first}' — injecting coverage env")
 
             patched_lines.append(line)
 
         if not found_target_cmd:
-            return None, "CMD not gunicorn/uvicorn — cannot auto-patch"
+            # Last resort: inject anyway — coverage env vars are harmless if
+            # the CMD doesn't import coverage.  Let Docker build decide.
+            logger.warning(
+                "[dynamic][patch] CMD not a recognised Python server — "
+                "injecting coverage env anyway (best-effort)"
+            )
+            found_target_cmd = True
 
         # sitecustomize.py content written via printf \n sequences.
         # Single-quoted printf args pass double quotes through literally, so
@@ -583,19 +631,33 @@ class DynamicReachabilityAgent(BaseTool):
                 await proc.wait()
                 return {"status": "timeout", "note": "schemathesis timed out", "cmd": " ".join(cmd)}
 
-            if proc.returncode == 0:
-                logger.info("[dynamic][schemathesis] Tests completed successfully")
+            stdout_text = stdout.decode("utf-8", errors="replace")[-1000:]
+            stderr_text = stderr.decode("utf-8", errors="replace")[-1000:]
+
+            # Schemathesis exit codes:
+            #   0 = all tests passed
+            #   1 = test failures found (API issues — expected for vuln scanning)
+            #   2 = internal/CLI error (actual failure)
+            if proc.returncode in (0, 1):
+                # rc=1 means schemathesis found API issues — that's expected
+                # and means it successfully exercised the API.
+                status = "completed" if proc.returncode == 0 else "completed_with_findings"
+                logger.info(
+                    f"[dynamic][schemathesis] {status} (rc={proc.returncode})"
+                )
                 return {
-                    "status": "completed",
-                    "stdout": stdout.decode("utf-8", errors="replace")[-1000:],
+                    "status": status,
+                    "returncode": proc.returncode,
+                    "stdout": stdout_text,
                     "cmd": " ".join(cmd),
                 }
 
-            logger.warning(f"[dynamic][schemathesis] Tests failed (rc={proc.returncode})")
+            logger.warning(f"[dynamic][schemathesis] Internal error (rc={proc.returncode})")
             return {
-                "status": "failed",
+                "status": "error",
                 "returncode": proc.returncode,
-                "stderr": stderr.decode("utf-8", errors="replace")[-1000:],
+                "stdout": stdout_text,
+                "stderr": stderr_text,
                 "cmd": " ".join(cmd),
             }
 
@@ -786,30 +848,74 @@ class DynamicReachabilityAgent(BaseTool):
         coverage_data: Dict[str, Any],
         vulnerabilities: List[Dict[str, Any]],
         taint_events: Optional[List[Dict[str, Any]]] = None,
+        static_findings: Optional[List[Dict[str, Any]]] = None,
+        repo_path: Optional[Path] = None,
     ) -> List[ReachabilityFinding]:
         """
         Cross-reference dynamically executed (file, function) pairs from
         coverage.json with static vulnerability findings.  Taint sink events
         from runtime_hooks are used as a second evidence stream.
 
-        Verdicts:
-          CONFIRMED 0.95 — package import path was dynamically hit (coverage)
-          CONFIRMED 0.90 — package name found in a taint sink event stack frame
-                           (sink reached but coverage didn't capture the path)
-          LIKELY    0.70 — package not seen in either evidence stream
+        Three strategies are used (only packages with actual evidence are emitted):
+
+        Strategy 1 — Direct library match:
+            Package import path (e.g. site-packages/django/...) appears in
+            coverage file list.  Strongest signal.
+            → sink_reachable=True, confidence=0.95
+
+        Strategy 2 — Import-in-executed-file:
+            An app source file (e.g. api/views.py) was executed AND imports
+            the vulnerable package.  This is indirect evidence — the app code
+            that *uses* the library ran, but the library's own code isn't in
+            coverage.  Treated as import-time observation, NOT a full sink hit.
+            → import_time_hit=True, sink_reachable=False, confidence=0.40
+
+        Strategy 3 — Taint event stack:
+            Package name found in a taint sink event stack frame.
+            → sink_reachable=True, confidence=0.90
+
+        Packages with NO evidence from any strategy are NOT emitted.
+        The orchestrator gates dynamic reachability on the FULL evidence chain
+        (SCA → taint → route → static → coverage).
         """
         # Build hit sets from coverage data
         hit_functions: set[str] = set()
         hit_files: set[str] = set()
+        hit_files_full: set[str] = set()  # full paths for import scanning
 
         for file_path, file_data in coverage_data.get("files", {}).items():
             rel = Path(file_path).name
             hit_files.add(rel)
+            hit_files_full.add(file_path)
 
             for func_name, func_data in file_data.get("functions", {}).items():
                 if func_data.get("executed_lines"):
                     hit_functions.add(func_name)
                     hit_functions.add(f"{rel}:{func_name}")
+
+        # Strategy 2 prep: scan executed app files for import statements.
+        # Build a set of packages imported by files that were executed at runtime.
+        runtime_imported_packages: set[str] = set()
+        for file_path in hit_files_full:
+            try:
+                p = Path(file_path)
+                # Coverage.json may contain relative paths (e.g. "src/app.py" from
+                # inside a Docker container). Resolve against repo_path when the
+                # path doesn't exist as-is.
+                if not p.is_absolute() or not p.exists():
+                    if repo_path is not None:
+                        p = repo_path / file_path
+                if not p.exists() or not p.suffix == ".py":
+                    continue
+                source = p.read_text(encoding="utf-8", errors="replace")
+                for m in re.finditer(
+                    r"^\s*(?:import|from)\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+                    source,
+                    re.MULTILINE,
+                ):
+                    runtime_imported_packages.add(m.group(1).lower())
+            except Exception:
+                pass
 
         # Build a flat lowercased corpus of all stack frame text from taint sink
         # events so we can do a single substring scan per package later.
@@ -820,6 +926,24 @@ class DynamicReachabilityAgent(BaseTool):
                     stack = event.get("data", {}).get("stack", [])
                     for frame in stack:
                         taint_stack_corpus.append(frame.lower())
+
+        # Strategy 2b — function-level cross-reference.
+        # Static analysis produces call chains like "home → flask.render_template_string".
+        # Coverage only shows app code (home, yaml_test, ...) — not library files.
+        # If coverage confirms the app-side caller ran, the library is reachable.
+        # Build: CVE → {lowercased app function names from static findings}
+        static_fn_index: Dict[str, set] = {}
+        hit_fns_lower = {fn.lower() for fn in hit_functions}
+        for sf in (static_findings or []):
+            cve = sf.get("cve_id")
+            if not cve:
+                continue
+            raw_fn = sf.get("function") or ""
+            for fn in raw_fn.split(","):
+                fn = fn.strip().lower()
+                if fn:
+                    static_fn_index.setdefault(cve, set()).add(fn)
+                    static_fn_index[cve].add(fn.rsplit(".", 1)[-1])
 
         findings: List[ReachabilityFinding] = []
 
@@ -837,32 +961,65 @@ class DynamicReachabilityAgent(BaseTool):
             if not cves:
                 cves = [None]
 
-            # Only do substring matching for names long enough to be unambiguous
+            # Strategy 1: Direct library path/function in coverage
             dynamically_hit = False
-            taint_confirmed = False
             if len(import_name) >= _MIN_PKG_MATCH_LEN:
                 dynamically_hit = any(
                     import_name in f.lower() for f in hit_files
                 ) or any(
                     import_name in f.lower() for f in hit_functions
                 )
-                # Check if the package name appears in any taint sink stack frame.
-                # This catches cases where a vulnerable package reached a sink but
-                # coverage.py didn't instrument that specific path.
-                taint_confirmed = any(
-                    import_name in frame for frame in taint_stack_corpus
-                )
+
+            # Strategy 2a: Executed app file imports this package (indirect,
+            # file-level — treated as import-time observation).
+            import_in_executed = False
+            if not dynamically_hit:
+                import_in_executed = import_name in runtime_imported_packages
+
+            # Strategy 2b: App-side caller from static call chain was executed.
+            # e.g. static says home() → flask.render_template_string(); if home()
+            # appears in coverage hit_functions, Flask is runtime-confirmed even
+            # though Flask's own files are not in coverage (site-packages).
+            if not dynamically_hit:
+                for cve in cves:
+                    if cve and cve in static_fn_index:
+                        if static_fn_index[cve] & hit_fns_lower:
+                            dynamically_hit = True
+                            import_in_executed = False
+                            break
+
+            # Strategy 3: Package in taint sink event stack frames
+            taint_confirmed = False
+            if not dynamically_hit and not import_in_executed:
+                if len(import_name) >= _MIN_PKG_MATCH_LEN:
+                    taint_confirmed = any(
+                        import_name in frame for frame in taint_stack_corpus
+                    )
+
+            # Only emit findings for packages with ACTUAL coverage evidence.
+            # Packages with no evidence are skipped — the orchestrator will
+            # only see them via static reach map.
+            if not dynamically_hit and not import_in_executed and not taint_confirmed:
+                continue
 
             if dynamically_hit:
+                # Direct library code in coverage → strongest signal
                 verdict, confidence = "CONFIRMED", 0.95
-            elif taint_confirmed:
-                # Taint evidence without coverage: still strong signal since we
-                # directly observed tainted data flowing through the package.
-                verdict, confidence = "CONFIRMED", 0.90
+                sink_reachable = True
+                import_time_hit = False
+            elif import_in_executed:
+                # App code that imports the package ran, but library code itself
+                # is not in coverage.  This is import-time evidence only.
+                # The orchestrator will promote this to full dynamic reachability
+                # ONLY if the package also has taint + route + static evidence.
+                verdict, confidence = "LIKELY", 0.40
+                sink_reachable = False
+                import_time_hit = True
             else:
-                verdict, confidence = "LIKELY", 0.70
-
-            sink_reachable = dynamically_hit or taint_confirmed
+                # Taint stack evidence
+                verdict, confidence = "CONFIRMED", 0.90
+                sink_reachable = True
+                import_time_hit = False
 
             for cve in cves:
                 findings.append(
@@ -870,17 +1027,425 @@ class DynamicReachabilityAgent(BaseTool):
                         cve_id=cve,
                         package=vuln.get("package"),
                         import_detected=True,
-                        call_chain_exists=True,
+                        call_chain_exists=dynamically_hit or taint_confirmed,
                         sink_reachable=sink_reachable,
                         verdict=verdict,
                         confidence=confidence,
                         evidence_type="dynamic",
+                        import_time_hit=import_time_hit,
                         function=None,
                         files=list(hit_files)[:5],
                     )
                 )
 
         return findings
+
+    # ------------------------------------------------------------------
+    # Docker-compose mode
+    # ------------------------------------------------------------------
+
+    async def _run_compose_mode(
+        self,
+        context: ScanContext,
+        repo_path: Path,
+        runtime: Any,
+        preflight: Dict[str, Any],
+    ) -> AgentResult:
+        """Run dynamic reachability using docker-compose.
+
+        Flow:
+          1. Patch Dockerfile (if build context) to inject coverage instrumentation
+          2. Patch docker-compose.yml to mount coverage volume + set env
+          3. `docker compose up -d --build`
+          4. Wait for healthy
+          5. Run schemathesis
+          6. `docker compose down`
+          7. Extract coverage from volume (or via `docker compose exec`)
+          8. Correlate
+        """
+        compose_path = Path(preflight["compose_path"])
+        openapi_path = preflight["openapi_path"]
+        timeout = runtime.timeout or self.default_timeout
+        coverage_wait = runtime.coverage_wait
+        container_port = runtime.container_port
+
+        coverage_dir = tempfile.mkdtemp(prefix="vulnreach_cov_")
+        patched_dockerfile_path: Optional[str] = None
+
+        # Step 1 — Patch the Dockerfile used by the target service
+        dockerfile_path = preflight.get("dockerfile_path")
+        dockerfile_already_instrumented = False
+        if dockerfile_path and Path(dockerfile_path).exists():
+            content = Path(dockerfile_path).read_text(encoding="utf-8")
+            if "COVERAGE_PROCESS_START" in content:
+                dockerfile_already_instrumented = True
+                logger.info("[dynamic][compose] Dockerfile already has coverage instrumentation")
+            else:
+                # Patch Dockerfile to inject coverage
+                patched_content, skip_reason = self._patch_dockerfile(Path(dockerfile_path))
+                if patched_content:
+                    patched_dockerfile_path = str(repo_path / ".vulnreach_Dockerfile")
+                    Path(patched_dockerfile_path).write_text(patched_content, encoding="utf-8")
+                    logger.info("[dynamic][compose] Wrote patched Dockerfile for coverage")
+                else:
+                    logger.warning(f"[dynamic][compose] Could not patch Dockerfile: {skip_reason}")
+
+        # Step 2 — Patch compose file
+        patched_compose_path, patch_meta = self._patch_compose_file(
+            compose_path, repo_path, coverage_dir, container_port,
+            patched_dockerfile=patched_dockerfile_path,
+            already_instrumented=dockerfile_already_instrumented,
+        )
+        if patched_compose_path is None:
+            shutil.rmtree(coverage_dir, ignore_errors=True)
+            if patched_dockerfile_path:
+                Path(patched_dockerfile_path).unlink(missing_ok=True)
+            return AgentResult(
+                tool_name=self.tool_name, findings=[],
+                metadata={"status": "failed", "step": "compose_patch", **patch_meta},
+            )
+
+        container_started: Dict[str, str] = {"status": "no", "id": "na"}
+        schemathesis_meta: Dict[str, Any] = {}
+        target_svc = patch_meta.get("target_service", "backend")
+
+        try:
+            # Step 3 — docker compose up
+            logger.info("[dynamic][compose] Building and starting services...")
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "compose", "-f", str(patched_compose_path),
+                "up", "-d", "--build",
+                cwd=str(repo_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return AgentResult(
+                    tool_name=self.tool_name, findings=[],
+                    metadata={"status": "failed", "step": "compose_up_timeout"},
+                )
+
+            if proc.returncode != 0:
+                err = stderr.decode("utf-8", errors="replace")[-2000:]
+                return AgentResult(
+                    tool_name=self.tool_name, findings=[],
+                    metadata={"status": "failed", "step": "compose_up", "stderr": err},
+                )
+
+            # Step 4 — Wait for healthy
+            base_url = f"http://localhost:{container_port}"
+            healthy = await self._wait_for_healthy(base_url, timeout=30)
+            if not healthy:
+                return AgentResult(
+                    tool_name=self.tool_name, findings=[],
+                    metadata={"status": "failed", "step": "health_check", "url": base_url},
+                )
+
+            container_started = {"status": "yes-running", "id": "compose"}
+
+            # Step 5 — Schemathesis
+            schemathesis_meta = await self._run_schemathesis(
+                base_url, openapi_path, container_port, None
+            )
+
+            # Wait for coverage flush
+            logger.info(f"[dynamic][compose] Waiting {coverage_wait}s for coverage flush...")
+            await asyncio.sleep(coverage_wait)
+
+            # Step 6a — Extract coverage via docker compose exec BEFORE stopping.
+            # This runs `coverage combine && coverage json` inside the running
+            # container, writing the result to the mounted /coverage volume.
+            await self._extract_coverage_via_compose(
+                patched_compose_path, repo_path, target_svc, coverage_dir
+            )
+
+        finally:
+            # Step 6b — docker compose down
+            down_proc = await asyncio.create_subprocess_exec(
+                "docker", "compose", "-f", str(patched_compose_path),
+                "down", "--remove-orphans",
+                cwd=str(repo_path),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                await asyncio.wait_for(down_proc.wait(), timeout=60)
+            except asyncio.TimeoutError:
+                down_proc.kill()
+                await down_proc.wait()
+
+            # Cleanup patched files
+            if patched_compose_path and Path(patched_compose_path).exists():
+                Path(patched_compose_path).unlink(missing_ok=True)
+            if patched_dockerfile_path and Path(patched_dockerfile_path).exists():
+                Path(patched_dockerfile_path).unlink(missing_ok=True)
+
+        # Step 7 — Parse coverage
+        coverage_data: Optional[Dict[str, Any]] = None
+        coverage_meta: Dict[str, Any] = {}
+        taint_events: List[Dict[str, Any]] = []
+
+        cov_json = Path(coverage_dir) / "coverage.json"
+        if cov_json.exists():
+            try:
+                coverage_data = json.loads(cov_json.read_text(encoding="utf-8"))
+                shutil.copy2(cov_json, repo_path / "coverage.json")
+                coverage_meta = {"files_count": len(coverage_data.get("files", {}))}
+            except Exception as e:
+                coverage_meta = {"error": f"coverage_parse_failed: {e}"}
+
+        # Also try combining raw .coverage files on the host if coverage.json wasn't produced
+        if not coverage_data:
+            coverage_files = list(Path(coverage_dir).glob(".coverage*"))
+            if coverage_files:
+                coverage_data, coverage_meta = await self._combine_coverage_on_host(
+                    coverage_dir, repo_path
+                )
+
+        # Collect taint events
+        for ef in sorted(Path(coverage_dir).glob("runtime_events.*.json")):
+            try:
+                batch = json.loads(ef.read_text(encoding="utf-8"))
+                if isinstance(batch, list):
+                    taint_events.extend(batch)
+            except Exception:
+                pass
+
+        shutil.rmtree(coverage_dir, ignore_errors=True)
+
+        if not coverage_data:
+            return AgentResult(
+                tool_name=self.tool_name, findings=[],
+                metadata={
+                    "status": "skipped", "step": "coverage_collection",
+                    "container_started": container_started,
+                    "reason": coverage_meta.get("error", "empty coverage"),
+                    "schemathesis": schemathesis_meta,
+                    "coverage_dir_files": os.listdir(coverage_dir) if Path(coverage_dir).exists() else [],
+                },
+            )
+
+        # Step 8 — Correlate
+        findings = self._correlate(coverage_data, context.vulnerabilities, taint_events, static_findings=context.taint_flows, repo_path=repo_path)
+        return AgentResult.model_validate({
+            "tool_name": self.tool_name,
+            "findings": [f.model_dump() for f in findings],
+            "metadata": {
+                "status": "ok",
+                "mode": "compose",
+                "finding_count": len(findings),
+                "container_started": container_started,
+                "schemathesis": schemathesis_meta,
+                "coverage": coverage_meta,
+            },
+        })
+
+    async def _extract_coverage_via_compose(
+        self,
+        compose_path: str,
+        repo_path: Path,
+        service_name: str,
+        coverage_dir: str,
+    ) -> None:
+        """Run coverage combine + json inside the running container via docker compose exec.
+
+        This handles the case where coverage data is written to /tmp inside the
+        container (as per .coveragerc data_file) rather than to the /coverage mount.
+        We copy .coverage* files from /tmp to /coverage, combine, and export JSON.
+        """
+        # Copy any .coverage files from /tmp (where .coveragerc writes) to /coverage mount
+        copy_cmd = (
+            "sh -c '"
+            "cp /tmp/.coverage* /coverage/ 2>/dev/null; "
+            "cd /coverage && "
+            "coverage combine .coverage* 2>/dev/null; "
+            "coverage json -o /coverage/coverage.json 2>/dev/null; "
+            "echo done"
+            "'"
+        )
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "compose", "-f", compose_path,
+            "exec", "-T", service_name,
+            "sh", "-c",
+            "cp /tmp/.coverage* /coverage/ 2>/dev/null; "
+            "cd /coverage && "
+            "coverage combine .coverage* 2>/dev/null; "
+            "coverage json -o /coverage/coverage.json 2>/dev/null; "
+            "ls -la /coverage/",
+            cwd=str(repo_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            out = stdout.decode("utf-8", errors="replace")
+            logger.info(f"[dynamic][compose] Coverage extraction: rc={proc.returncode}\n{out}")
+            if stderr:
+                logger.debug(f"[dynamic][compose] Coverage extraction stderr: {stderr.decode()[:500]}")
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            logger.warning("[dynamic][compose] Coverage extraction timed out")
+
+    async def _combine_coverage_on_host(
+        self, coverage_dir: str, repo_path: Path
+    ) -> tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+        """Fallback: combine coverage files on the host using local Python."""
+        cov_json = Path(coverage_dir) / "coverage.json"
+        combine_proc = await asyncio.create_subprocess_exec(
+            "python", "-m", "coverage", "combine",
+            "--data-file", str(Path(coverage_dir) / ".coverage"),
+            cwd=str(coverage_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            await asyncio.wait_for(combine_proc.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            combine_proc.kill()
+            await combine_proc.wait()
+            return None, {"error": "coverage_combine_timeout"}
+
+        json_proc = await asyncio.create_subprocess_exec(
+            "python", "-m", "coverage", "json",
+            "--data-file", str(Path(coverage_dir) / ".coverage"),
+            "-o", str(cov_json),
+            cwd=str(coverage_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            await asyncio.wait_for(json_proc.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            json_proc.kill()
+            await json_proc.wait()
+            return None, {"error": "coverage_json_timeout"}
+
+        if cov_json.exists():
+            try:
+                data = json.loads(cov_json.read_text(encoding="utf-8"))
+                shutil.copy2(cov_json, repo_path / "coverage.json")
+                return data, {"files_count": len(data.get("files", {}))}
+            except Exception as e:
+                return None, {"error": f"coverage_parse_failed: {e}"}
+
+        return None, {"error": "coverage_json_not_created"}
+
+    def _patch_compose_file(
+        self,
+        compose_path: Path,
+        repo_path: Path,
+        coverage_dir: str,
+        container_port: int,
+        patched_dockerfile: Optional[str] = None,
+        already_instrumented: bool = False,
+    ) -> Tuple[Optional[str], Dict[str, Any]]:
+        """Patch docker-compose file to inject coverage instrumentation.
+
+        Adds to the target web service:
+          - COVERAGE_PROCESS_START env var
+          - /coverage volume mount  (host → container)
+          - Port mapping if not present
+          - Dockerfile override (if a patched Dockerfile was generated)
+        Writes a patched copy; never modifies the original.
+
+        Returns (patched_path, meta). patched_path is None on failure.
+        """
+        try:
+            import yaml as _yaml
+        except ImportError:
+            return None, {"error": "pyyaml_not_installed"}
+
+        try:
+            content = compose_path.read_text(encoding="utf-8")
+            data = _yaml.safe_load(content)
+        except Exception as exc:
+            return None, {"error": "compose_parse_failed", "details": str(exc)}
+
+        services = data.get("services")
+        if not services or not isinstance(services, dict):
+            return None, {"error": "no_services_in_compose"}
+
+        # Find the primary web service — prefer names 'web', 'app', 'api',
+        # otherwise pick the first service that exposes a port.
+        target_svc = None
+        for preferred in ("web", "app", "api", "server", "backend"):
+            if preferred in services:
+                target_svc = preferred
+                break
+        if not target_svc:
+            for svc_name, svc_cfg in services.items():
+                if svc_cfg.get("ports"):
+                    target_svc = svc_name
+                    break
+        if not target_svc:
+            target_svc = next(iter(services))
+
+        svc = services[target_svc]
+        logger.info(f"[dynamic][compose] Patching service '{target_svc}'")
+
+        # Override Dockerfile if we generated a patched one
+        if patched_dockerfile:
+            build = svc.get("build")
+            if isinstance(build, str):
+                # build: . → build: {context: ., dockerfile: ...}
+                svc["build"] = {
+                    "context": build,
+                    "dockerfile": patched_dockerfile,
+                }
+            elif isinstance(build, dict):
+                build["dockerfile"] = patched_dockerfile
+            else:
+                svc["build"] = {"context": ".", "dockerfile": patched_dockerfile}
+
+        # Inject environment variables
+        env = svc.get("environment")
+        cov_env_vars = {
+            "COVERAGE_PROCESS_START": "/app/.coveragerc",
+        }
+        if isinstance(env, list):
+            for k, v in cov_env_vars.items():
+                if not any(k in e for e in env):
+                    env.append(f"{k}={v}")
+        elif isinstance(env, dict):
+            for k, v in cov_env_vars.items():
+                env.setdefault(k, v)
+        else:
+            svc["environment"] = dict(cov_env_vars)
+
+        # Inject /coverage volume mount
+        volumes = svc.get("volumes", [])
+        cov_mount = f"{coverage_dir}:/coverage"
+        if not any("/coverage" in str(v) for v in volumes):
+            volumes.append(cov_mount)
+        svc["volumes"] = volumes
+
+        # Ensure port is exposed
+        ports = svc.get("ports", [])
+        port_str = f"{container_port}:{container_port}"
+        if not any(str(container_port) in str(p) for p in ports):
+            ports.append(port_str)
+        svc["ports"] = ports
+
+        # Write patched file (never overwrite original)
+        patched_path = repo_path / ".vulnreach_compose.yml"
+        try:
+            patched_path.write_text(
+                _yaml.dump(data, default_flow_style=False), encoding="utf-8"
+            )
+        except Exception as exc:
+            return None, {"error": "compose_write_failed", "details": str(exc)}
+
+        return str(patched_path), {
+            "target_service": target_svc,
+            "patched": True,
+            "dockerfile_patched": patched_dockerfile is not None,
+            "dockerfile_already_instrumented": already_instrumented,
+        }
 
     # ------------------------------------------------------------------
     # eBPF non-invasive tracing (alternative to Dockerfile patching)

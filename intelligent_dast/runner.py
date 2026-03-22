@@ -66,6 +66,7 @@ def run_dast(
     llm_provider: str = "anthropic",
     llm_model: Optional[str] = None,
     max_iterations: int = 5,
+    ollama_base_url: str = "http://localhost:11434",
 ) -> List[FlowResult]:
     """Run the full Intelligent DAST pipeline.
 
@@ -107,7 +108,7 @@ def run_dast(
             print(f"OpenAPI spec loaded: {len(spec.get('paths', {}))} paths")
 
     # 4. LLM client (shared across all sessions)
-    llm = LLMClient(provider=llm_provider, model=llm_model)
+    llm = LLMClient(provider=llm_provider, model=llm_model, ollama_base_url=ollama_base_url)
 
     # 5. Process flows
     flow_results: List[FlowResult] = []
@@ -277,6 +278,10 @@ def main() -> None:
         help="Output findings file (default: findings.json)",
     )
     parser.add_argument(
+        "--ollama-url", default="http://localhost:11434",
+        help="Ollama server URL (default: http://localhost:11434)",
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true",
         help="Enable debug logging",
     )
@@ -297,6 +302,7 @@ def main() -> None:
         llm_provider=args.provider,
         llm_model=args.model,
         max_iterations=args.max_iterations,
+        ollama_base_url=args.ollama_url,
     )
 
     # Count parse errors for the summary

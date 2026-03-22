@@ -1,38 +1,37 @@
-"""Intelligent DAST Agent — Claude-steered SQL injection confirmation (v1).
+"""Intelligent DAST Agent — delegates to `intelligent_dast.runner.run_dast()`.
 
 Flow:
-  Step 1 — Pre-flight: verify config, API key, and taint paths exist
-  Step 2 — Assemble DastScanContext from pipeline context (Phase 1)
-  Step 3 — Run the steering loop (Phase 2 + 3): Claude picks payloads,
-            httpx executes them, confirmation signals are checked
-  Step 4 — Return structured DastFinding results (Phase 4)
+  Step 1 — Pre-flight: check config, taint flows, base URL
+  Step 2 — Write taint flows to a temp file (run_dast reads from disk)
+  Step 3 — Find openapi.json/yaml in the repo path (if present)
+  Step 4 — Call run_dast() in a thread executor (it is synchronous)
+  Step 5 — Convert FlowResult list to reachability-evidence storage format
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
-from typing import Any, Dict, List
+import tempfile
+from functools import partial
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
 from core.agent import BaseAgent
 from core.models import AgentResult, ScanContext
-from agents.dast.context_assembler import assemble
-from agents.dast.steering_loop import SteeringLoop
 
 logger = logging.getLogger(__name__)
 
-# Fallback if config does not specify a base URL
 _FALLBACK_PORT = 3000
+_OPENAPI_NAMES = ("openapi.json", "openapi.yaml", "openapi.yml")
 
 
 class IntelligentDastAgent(BaseAgent):
     tool_name = "intelligent_dast"
-
-    # ------------------------------------------------------------------
-    # Entry point
-    # ------------------------------------------------------------------
 
     async def run(self, context: ScanContext) -> AgentResult:
         # ------------------------------------------------------------------
@@ -45,165 +44,154 @@ class IntelligentDastAgent(BaseAgent):
         if not idast_cfg.enabled:
             return self._skipped("disabled_in_config")
 
-        # Resolve API key — only required for the Anthropic provider.
-        # Reload dotenv files so env vars set after server startup are picked up.
+        if not context.taint_flows:
+            return self._skipped("no_taint_flows")
+
+        # Resolve API key — only required for the Anthropic provider
         load_dotenv(dotenv_path=".env.local", override=False)
-        load_dotenv(override=False)  # also checks .env
+        load_dotenv(override=False)
         api_key = os.environ.get(idast_cfg.api_key_env, "")
         if idast_cfg.provider == "anthropic" and not api_key:
-            return self._skipped(f"missing_api_key: {idast_cfg.api_key_env} not set")
+            return self._skipped(f"missing_api_key:{idast_cfg.api_key_env}")
 
-        # Need at least some taint flows to probe
-        if not context.taint_flows:
-            return AgentResult(
-                tool_name=self.tool_name,
-                status="skipped",
-                findings=[],
-                metadata={
-                    "status": "skipped",
-                    "reason": "no_taint_flows",
-                    "hint": "Run the tainter agent before intelligent_dast",
-                },
-            )
-
-        # Determine base URL: config override → runtime container port → fallback
+        # Base URL: config override → runtime container_port → fallback
         base_url = idast_cfg.base_url or ""
         if not base_url:
-            port = (
-                context.config.scan.runtime.container_port
-                if context.config.scan.runtime
-                else _FALLBACK_PORT
-            )
+            port = context.config.scan.runtime.container_port if context.config.scan.runtime else _FALLBACK_PORT
             base_url = f"http://localhost:{port}"
 
+        # ------------------------------------------------------------------
+        # Step 2 — Write taint flows to a temp file
+        # ------------------------------------------------------------------
+        taint_tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        )
+        try:
+            json.dump({"flows": context.taint_flows}, taint_tmp, indent=2)
+            taint_tmp.flush()
+            taint_file = taint_tmp.name
+        finally:
+            taint_tmp.close()
+
+        # ------------------------------------------------------------------
+        # Step 3 — Find openapi spec in the repo
+        # ------------------------------------------------------------------
+        openapi_spec: Optional[str] = None
+        if context.repo_path:
+            repo = Path(context.repo_path)
+            for name in _OPENAPI_NAMES:
+                candidate = repo / name
+                if candidate.exists():
+                    openapi_spec = str(candidate)
+                    logger.info(f"[intelligent_dast] OpenAPI spec: {openapi_spec}")
+                    break
+
         logger.info(
-            f"[intelligent_dast] Starting: base_url={base_url} "
-            f"taint_flows={len(context.taint_flows)} max_iter={idast_cfg.max_iter}"
+            f"[intelligent_dast] Starting: url={base_url} "
+            f"flows={len(context.taint_flows)} provider={idast_cfg.provider} "
+            f"model={idast_cfg.model} openapi={openapi_spec}"
         )
 
         # ------------------------------------------------------------------
-        # Step 2 — Assemble DastScanContext (Phase 1)
+        # Step 4 — Run synchronous run_dast() in executor
         # ------------------------------------------------------------------
         try:
-            dast_context = assemble(context, base_url)
-        except Exception as exc:
-            logger.error(f"[intelligent_dast] Context assembly failed: {exc}")
-            return AgentResult(
-                tool_name=self.tool_name,
-                status="error",
-                findings=[],
-                metadata={"error": "context_assembly_failed", "details": str(exc)},
-            )
+            from intelligent_dast.runner import run_dast
 
-        if not dast_context.taint_paths:
-            return AgentResult(
-                tool_name=self.tool_name,
-                status="skipped",
-                findings=[],
-                metadata={
-                    "status": "skipped",
-                    "reason": "no_sql_taint_paths",
-                    "hint": "No SQL-related taint flows found — v1 supports SQLi only",
-                    "flows_in_context": len(context.taint_flows),
-                },
-            )
-
-        logger.info(
-            f"[intelligent_dast] Assembled {len(dast_context.taint_paths)} SQL taint paths"
-        )
-
-        # ------------------------------------------------------------------
-        # Step 3 — Steering loop (Phase 2 + 3)
-        # ------------------------------------------------------------------
-        try:
-            loop = SteeringLoop(
-                provider=idast_cfg.provider,
+            fn = partial(
+                run_dast,
+                taint_file=taint_file,
                 base_url=base_url,
-                model=idast_cfg.model,
-                api_key=api_key,
-                ollama_base_url=idast_cfg.ollama_base_url,
-                max_iter=idast_cfg.max_iter,
-                auth_credentials=idast_cfg.auth_credentials,
+                openapi_spec=openapi_spec,
+                llm_provider=idast_cfg.provider,
+                llm_model=idast_cfg.model or None,
+                max_iterations=idast_cfg.max_iter,
+                ollama_base_url=idast_cfg.ollama_base_url or "http://localhost:11434",
             )
-            dast_findings = await loop.run(dast_context)
-        except RuntimeError as exc:
-            # Missing optional dependency (anthropic / httpx)
-            return AgentResult(
-                tool_name=self.tool_name,
-                status="error",
-                findings=[],
-                metadata={"error": "missing_dependency", "details": str(exc)},
-            )
+            loop = asyncio.get_event_loop()
+            flow_results = await loop.run_in_executor(None, fn)
         except Exception as exc:
-            logger.exception("[intelligent_dast] Steering loop failed")
+            logger.exception("[intelligent_dast] run_dast failed")
             return AgentResult(
                 tool_name=self.tool_name,
-                status="error",
                 findings=[],
-                metadata={"error": "steering_loop_failed", "details": str(exc)},
+                metadata={"error": "run_dast_failed", "details": str(exc)},
             )
+        finally:
+            # Clean up temp file
+            try:
+                Path(taint_file).unlink(missing_ok=True)
+            except Exception:
+                pass
 
         # ------------------------------------------------------------------
-        # Step 4 — Format output (Phase 4)
+        # Step 5 — Convert FlowResult list to storage format
         # ------------------------------------------------------------------
-        confirmed = [f for f in dast_findings if f.status == "confirmed"]
+        confirmed = [fr for fr in flow_results if fr.finding]
+        skipped = [fr for fr in flow_results if fr.skipped]
 
-        # Convert DastFindings to reachability_evidence schema so store_reachability works.
-        # Only persist confirmed findings — exhausted/skipped/give_up add noise.
-        findings_for_storage = []
-        for f in confirmed:
-            coverage_files = f.evidence.get("coverage_delta", [])
+        findings_for_storage: List[Dict[str, Any]] = []
+        for fr in confirmed:
+            f = fr.finding
             findings_for_storage.append({
-                "cve_id": f.cve_reference,
-                "package": "Django",           # SQLi is in the app framework layer
+                "cve_id": None,
+                "package": None,
                 "import_detected": True,
                 "call_chain_exists": True,
                 "sink_reachable": True,
                 "verdict": "CONFIRMED",
-                "file": coverage_files[0] if coverage_files else None,
-                "function": f.endpoint,
-                "sink": f"{f.endpoint}?{f.parameter}",
                 "confidence": 1.0,
                 "evidence_type": "dast",
-                "files": coverage_files,
-                # Extra DAST-specific fields stored in the findings list
-                "dast_payload": f.confirmed_payload,
-                "dast_method": f.confirmation_method,
-                "dast_reasoning": f.reasoning,
-                "dast_vuln_class": f.vuln_class,
-                "dast_severity": f.severity,
+                "finding_type": "dast",
+                "function": fr.endpoint,
+                "files": [],
+                # DAST-specific details
+                "dast_flow_id": fr.flow_id,
+                "dast_vuln_class": fr.vulnerability_class,
+                "dast_payload": f.payload,
+                "dast_evidence": f.evidence,
+                "dast_confirmed_at_iteration": f.confirmed_at_iteration,
+                "dast_endpoint": fr.endpoint,
             })
 
         logger.info(
             f"[intelligent_dast] Complete: "
-            f"{len(confirmed)} confirmed / {len(dast_findings)} total paths probed"
+            f"{len(confirmed)} confirmed / {len(flow_results)} flows tested / "
+            f"{len(skipped)} skipped"
         )
 
         return AgentResult(
             tool_name=self.tool_name,
-            status="ok",
             findings=findings_for_storage,
             metadata={
                 "status": "ok",
-                "paths_probed": len(dast_findings),
+                "flows_tested": len(flow_results),
                 "confirmed_count": len(confirmed),
-                "exhausted_count": sum(1 for f in dast_findings if f.status == "exhausted"),
-                "skipped_count": sum(1 for f in dast_findings if f.status == "skipped"),
+                "skipped_count": len(skipped),
+                "no_finding_count": len(flow_results) - len(confirmed) - len(skipped),
                 "base_url": base_url,
+                "provider": idast_cfg.provider,
                 "model": idast_cfg.model,
-                "findings": [f.model_dump() for f in dast_findings],
+                "openapi_spec": openapi_spec,
+                "findings": [
+                    {
+                        "flow_id": fr.flow_id,
+                        "vulnerability_class": fr.vulnerability_class,
+                        "endpoint": fr.endpoint,
+                        "confirmed": bool(fr.finding),
+                        "skipped": fr.skipped,
+                        "skip_reason": fr.skip_reason,
+                        "finding": fr.finding.to_dict() if fr.finding else None,
+                    }
+                    for fr in flow_results
+                ],
             },
         )
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     def _skipped(self, reason: str) -> AgentResult:
         logger.info(f"[intelligent_dast] Skipped — {reason}")
         return AgentResult(
             tool_name=self.tool_name,
-            status="skipped",
             findings=[],
             metadata={"status": "skipped", "reason": reason},
         )

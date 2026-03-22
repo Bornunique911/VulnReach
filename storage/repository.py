@@ -54,6 +54,14 @@ class StorageRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_raw_output(self, scan_id: str, tool_name: str) -> Optional[Dict[str, Any]]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_raw_tools(self, scan_id: str) -> List[str]:
+        raise NotImplementedError
+
+    @abstractmethod
     def list_scans(self) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
@@ -519,17 +527,61 @@ class PostgresRepository(StorageRepository):
                     "routes": routes,
                 }
 
+    def get_raw_output(self, scan_id: str, tool_name: str) -> Optional[Dict[str, Any]]:
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT payload FROM raw_outputs WHERE scan_id=%s AND tool_name=%s",
+                    (scan_id, tool_name),
+                )
+                row = cur.fetchone()
+                return row["payload"] if row else None
+
+    def list_raw_tools(self, scan_id: str) -> List[str]:
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT tool_name FROM raw_outputs WHERE scan_id=%s ORDER BY tool_name",
+                    (scan_id,),
+                )
+                return [row["tool_name"] for row in cur.fetchall()]
+
     def list_scans(self) -> List[Dict[str, Any]]:
         with self._conn() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT id, status, metadata, created_at FROM scans ORDER BY created_at DESC")
+                cur.execute("""
+                    SELECT
+                        s.id, s.status, s.metadata, s.created_at,
+                        COUNT(DISTINCT v.package)                                                                       AS pkg_count,
+                        COUNT(DISTINCT CASE WHEN v.severity = 'CRITICAL' THEN v.package END)                           AS critical_pkgs,
+                        COUNT(DISTINCT CASE WHEN v.severity = 'HIGH'     THEN v.package END)                           AS high_pkgs,
+                        COUNT(DISTINCT CASE WHEN v.severity = 'MEDIUM'   THEN v.package END)                           AS medium_pkgs,
+                        COUNT(DISTINCT CASE WHEN v.severity = 'LOW'      THEN v.package END)                           AS low_pkgs,
+                        COUNT(DISTINCT CASE WHEN c.evidence->>'reachability_class' = 'DYNAMICALLY_REACHABLE' THEN v.package END)    AS confirmed_pkgs,
+                        COUNT(DISTINCT CASE WHEN c.evidence->>'reachability_class' = 'STATICALLY_REACHABLE'  THEN v.package END)    AS likely_pkgs
+                    FROM scans s
+                    LEFT JOIN correlation_results c  ON c.scan_id = s.id
+                    LEFT JOIN vulnerabilities v      ON v.scan_id = s.id
+                                                    AND v.cve_id @> to_jsonb(c.cve_id)
+                    GROUP BY s.id, s.status, s.metadata, s.created_at
+                    ORDER BY s.created_at DESC
+                """)
                 rows = cur.fetchall() or []
                 return [
                     {
-                        "scan_id": row["id"],
-                        "status": row["status"],
-                        "metadata": row.get("metadata") if isinstance(row, dict) else row[2],
-                        "created_at": row.get("created_at") if isinstance(row, dict) else row[3],
+                        "scan_id":      row["id"],
+                        "status":       row["status"],
+                        "metadata":     row.get("metadata") if isinstance(row, dict) else row[2],
+                        "created_at":   row.get("created_at") if isinstance(row, dict) else row[3],
+                        "pkg_count":      int(row["pkg_count"])      if row.get("pkg_count")      else 0,
+                        "confirmed_pkgs": int(row["confirmed_pkgs"]) if row.get("confirmed_pkgs") else 0,
+                        "likely_pkgs":    int(row["likely_pkgs"])    if row.get("likely_pkgs")    else 0,
+                        "sev_breakdown": {
+                            "CRITICAL": int(row["critical_pkgs"]) if row.get("critical_pkgs") else 0,
+                            "HIGH":     int(row["high_pkgs"])     if row.get("high_pkgs")     else 0,
+                            "MEDIUM":   int(row["medium_pkgs"])   if row.get("medium_pkgs")   else 0,
+                            "LOW":      int(row["low_pkgs"])      if row.get("low_pkgs")      else 0,
+                        },
                     }
                     for row in rows
                 ]
@@ -568,13 +620,20 @@ class PostgresRepository(StorageRepository):
                 pass
         finding_type = row.get("finding_type") or row.get("evidence_type")
         evidence = row.get("evidence") or {}
-        return {
-            "cve_id":       row.get("cve_id"),
-            "check_id":     row.get("check_id"),
-            "verdict":      row.get("verdict"),
-            "risk_score":   risk_score,
-            "priority":     row.get("priority"),
-            "confidence":   confidence,
-            "finding_type": finding_type,
-            "evidence":     evidence,
+        result: Dict[str, Any] = {
+            "cve_id":            row.get("cve_id"),
+            "check_id":          row.get("check_id"),
+            "verdict":           row.get("verdict"),
+            "risk_score":        risk_score,
+            "priority":          row.get("priority"),
+            "confidence":        confidence,
+            "finding_type":      finding_type,
+            "evidence":          evidence,
         }
+        # Promote classification fields stored in evidence blob to top-level
+        # so API consumers and the dashboard don't have to dig into evidence.
+        if evidence.get("reachability_class"):
+            result["reachability_class"] = evidence["reachability_class"]
+        if evidence.get("static_subtype"):
+            result["static_subtype"] = evidence["static_subtype"]
+        return result

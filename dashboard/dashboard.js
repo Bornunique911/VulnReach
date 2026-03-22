@@ -12,6 +12,30 @@ const TOOL_DEFS = {
   metadata:             { icon: '◇', desc: 'Dependency metadata enrichment' },
 };
 
+// ─── Theme ─────────────────────────────────────────────────────────────────
+const THEMES = ['system', 'dark', 'light'];
+const THEME_ICONS = { system: '⊙', dark: '◐', light: '○' };
+
+let _theme = localStorage.getItem('vr_theme') || 'system';
+
+function applyTheme(t) {
+  _theme = t;
+  const root = document.documentElement;
+  if (t === 'system') root.removeAttribute('data-theme');
+  else root.setAttribute('data-theme', t);
+  localStorage.setItem('vr_theme', t);
+  const btn = document.getElementById('theme-btn');
+  if (btn) btn.textContent = THEME_ICONS[t] + ' ' + t;
+}
+
+function cycleTheme() {
+  const next = THEMES[(THEMES.indexOf(_theme) + 1) % THEMES.length];
+  applyTheme(next);
+}
+
+// Apply on load before first paint
+applyTheme(_theme);
+
 // ─── Auth state ────────────────────────────────────────────────────────────
 // Token survives page reloads via sessionStorage.
 // On server restart (file change during dev), boot_id changes → auto-logout.
@@ -176,7 +200,7 @@ function setPage(id) {
 }
 
 // ─── API helpers ───────────────────────────────────────────────────────────
-async function apiFetch(path, opts = {}) {
+async function apiFetch(path, opts = {}, responseType = 'json') {
   const headers = { 'Content-Type': 'application/json', ...opts.headers };
   if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
   const res = await fetch(API + path, { headers, ...opts });
@@ -187,7 +211,91 @@ async function apiFetch(path, opts = {}) {
     throw new Error('Unauthorized');
   }
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return await res.json();
+  return responseType === 'blob' ? await res.blob() : await res.json();
+}
+
+// ─── Export helpers ────────────────────────────────────────────────────────
+function exportCSV(scan) {
+  if (!scan) return;
+  const findings = (scan.findings || []).filter(f => f.finding_type !== 'dast' && f.package);
+  // Group by package
+  const pkgMap = {};
+  for (const f of findings) {
+    const pkg = f.package;
+    if (!pkgMap[pkg]) pkgMap[pkg] = { ...f, cves: [] };
+    if (f.cve_id) pkgMap[pkg].cves.push(f.cve_id);
+    // Upgrade to worst reachability / severity
+    const tier = { DYNAMICALLY_REACHABLE: 4, STATICALLY_REACHABLE: 3, UNCERTAIN: 2, NOT_REACHABLE: 1 };
+    const srank = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
+    if ((tier[f.reachability_class] || 0) > (tier[pkgMap[pkg].reachability_class] || 0))
+      pkgMap[pkg].reachability_class = f.reachability_class;
+    if ((srank[f.severity] || 0) > (srank[pkgMap[pkg].severity] || 0))
+      pkgMap[pkg].severity = f.severity;
+  }
+
+  const headers = ['Package','CVE IDs','Severity','Reachability','Verdict','Priority','Risk Score','Fix Version','Files','Functions'];
+  const rows = Object.values(pkgMap).map(f => [
+    f.package || '',
+    (f.cves || []).join('; '),
+    f.severity || '',
+    f.reachability_class || '',
+    f.verdict || '',
+    f.priority || '',
+    typeof f.risk_score === 'number' ? f.risk_score.toFixed(2) : '',
+    f.fix_version || '',
+    (f.files || []).join('; '),
+    (f.functions || []).join('; '),
+  ]);
+
+  const csv = [headers, ...rows]
+    .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
+    .join('\r\n');
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `vulnreach-${(scan.scan_id || 'export').slice(0, 8)}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('CSV downloaded', 'success');
+}
+
+async function exportPDF(scanId) {
+  if (!scanId) return;
+  const btn = document.getElementById('panel-pdf-btn');
+  const origHtml = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner" style="width:10px;height:10px"></span>'; }
+  try {
+    const blob = await apiFetch(`/scan/${scanId}/export/pdf`, {}, 'blob');
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `vulnreach-${scanId.slice(0, 8)}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('PDF downloaded', 'success');
+  } catch(e) {
+    toast('PDF export failed: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = origHtml; }
+  }
+}
+
+// ─── Severity breakdown helper ─────────────────────────────────────────────
+function pkgSummaryHtml(pkg_count, sev_breakdown, status) {
+  const done = ['completed', 'blocked', 'partial'].includes(status);
+  if (!done) return '<span style="color:var(--text-mute)">—</span>';
+  if (!pkg_count) return '<span style="color:var(--text-mute)">0 packages</span>';
+  const sev = sev_breakdown || {};
+  const chips = [
+    { k: 'CRITICAL', col: 'var(--red)' },
+    { k: 'HIGH',     col: 'var(--amber)' },
+    { k: 'MEDIUM',   col: 'var(--blue)' },
+    { k: 'LOW',      col: 'var(--text-mute)' },
+  ].filter(s => sev[s.k] > 0)
+   .map(s => `<span style="font-size:0.65rem;font-weight:600;color:${s.col};margin-right:4px">${sev[s.k]}&thinsp;${s.k}</span>`)
+   .join('');
+  return `<span style="font-size:0.75rem;color:var(--text-mute)">${pkg_count} pkg${pkg_count !== 1 ? 's' : ''}</span>${chips ? `<br><span style="line-height:1.6">${chips}</span>` : ''}`;
 }
 
 // ─── Normalisation ─────────────────────────────────────────────────────────
@@ -200,7 +308,10 @@ function normaliseListScan(s) {
     repo_url:       s.repo_url   || meta.repo_url   || null,
     tools:          s.tools      || meta.tools       || [],
     started_at:     s.started_at || s.created_at     || null,
-    findings_count: s.findings_count ?? meta.findings_count ?? null,
+    pkg_count:      s.pkg_count      ?? null,
+    confirmed_pkgs: s.confirmed_pkgs ?? 0,
+    likely_pkgs:    s.likely_pkgs    ?? 0,
+    sev_breakdown:  s.sev_breakdown  || null,
   };
 }
 
@@ -208,18 +319,36 @@ function normaliseListScan(s) {
 function normaliseScan(full) {
   const meta = full.metadata || {};
   const findings = buildFindings(full);
+
+  // Compute per-package severity breakdown from findings (deduplicated by package)
+  const pkgSev = {};
+  for (const f of findings) {
+    if (f.finding_type === 'dast' || !f.package) continue;
+    const sev = (f.severity || '').toUpperCase();
+    if (!pkgSev[f.package] || sevRank(sev) > sevRank(pkgSev[f.package])) {
+      pkgSev[f.package] = sev;
+    }
+  }
+  const sevBreakdown = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
+  for (const sev of Object.values(pkgSev)) {
+    if (sevBreakdown.hasOwnProperty(sev)) sevBreakdown[sev]++;
+  }
+
   return {
     ...full,
     repo_path:       full.repo_path  || meta.repo_path  || null,
     repo_url:        full.repo_url   || meta.repo_url   || null,
     tools:           full.tools      || meta.tools       || [],
     started_at:      full.started_at || full.created_at  || null,
-    findings_count:  findings.length || null,
+    pkg_count:       Object.keys(pkgSev).length || null,
+    sev_breakdown:   sevBreakdown,
     failed_tools:    meta.failed_tools    || [],
     pipeline_status: meta.pipeline_status || null,
     findings,
   };
 }
+
+function sevRank(s) { return { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 }[s] || 0; }
 
 // Join correlation results with reachability evidence keyed by cve_id
 function buildFindings(scan) {
@@ -267,6 +396,9 @@ function buildFindings(scan) {
       priority:          c.priority,
       confidence:        c.confidence,
       finding_type:      findingType,
+      // 4-tier classification (preferred over heuristics)
+      reachability_class: c.reachability_class || ev.reachability_class || null,
+      static_subtype:     c.static_subtype     || ev.static_subtype     || null,
       // Static evidence fields (may live in evidence{} or at root for legacy)
       import_detected:   ev.import_detected   ?? r.import_detected   ?? false,
       call_chain_exists: ev.call_chain_exists  ?? r.call_chain_exists  ?? false,
@@ -276,8 +408,8 @@ function buildFindings(scan) {
       has_coverage_hit:  ev.has_coverage_hit ?? false,
       files:             Array.isArray(ev.files) ? ev.files : (Array.isArray(r.files) ? r.files : (r.file ? [r.file] : [])),
       function:          ev.function || r.function || null,
-      package:           v.package  || null,
-      severity:          v.severity || null,
+      package:           c.package  || v.package  || null,
+      severity:          c.severity || v.severity || null,
       fix_version:       v.fix_version || v.fixed_version || null,
     };
   });
@@ -360,7 +492,7 @@ function openRepoPage(encodedName) {
         <div class="scan-id">${s.scan_id}</div>
         <div><span class="badge-status ${s.status}"><span class="s-dot"></span>${s.status}</span></div>
         <div class="ts">${fmtDate(s.started_at)}</div>
-        <div style="font-size:0.75rem;color:var(--text-mute)">${s.findings_count != null ? s.findings_count + ' findings' : '—'}</div>
+        <div>${pkgSummaryHtml(s.pkg_count, s.sev_breakdown, s.status)}</div>
         <div class="tools-pills">${(s.tools||[]).slice(0,3).map(t=>`<span class="pill">${t}</span>`).join('')}${(s.tools||[]).length>3?`<span class="pill">+${s.tools.length-3}</span>`:''}</div>
         <div><button class="action-btn" onclick="event.stopPropagation();openPanel('${s.scan_id}')">View →</button></div>
       </div>`).join('');
@@ -371,9 +503,14 @@ function openRepoPage(encodedName) {
 function updateStats() {
   const repos = Object.keys(groupByRepo(scans)).length;
   document.getElementById('stat-total').textContent = repos ? `${repos} repo${repos !== 1 ? 's' : ''} · ${scans.length} scans` : '—';
-  document.getElementById('stat-running').textContent = scans.filter(s => s.status === 'running' || s.status === 'started').length;
-  document.getElementById('stat-confirmed').textContent = '—';
-  document.getElementById('stat-likely').textContent = '—';
+  document.getElementById('stat-running').textContent = scans.filter(s => s.status === 'running' || s.status === 'started').length || '—';
+
+  // Sum confirmed/likely package counts across all completed scans
+  const done = scans.filter(s => ['completed','blocked','partial'].includes(s.status));
+  const confirmed = done.reduce((n, s) => n + (s.confirmed_pkgs || 0), 0);
+  const likely    = done.reduce((n, s) => n + (s.likely_pkgs    || 0), 0);
+  document.getElementById('stat-confirmed').textContent = done.length ? confirmed : '—';
+  document.getElementById('stat-likely').textContent    = done.length ? likely    : '—';
 }
 
 // ─── Tool chips ────────────────────────────────────────────────────────────
@@ -409,8 +546,8 @@ async function launchScan() {
   const repo_url    = document.getElementById('f-repo-url').value.trim();
   const config_path = document.getElementById('f-config-path').value.trim();
 
-  if (!config_path) { showHint('Config path is required'); return; }
   if (!repo_path && !repo_url) { showHint('Provide a repo path or URL'); return; }
+  if (!repo_url && !config_path) { showHint('Config path is required for local repo scans'); return; }
 
   const btn = document.getElementById('launch-btn');
   btn.disabled = true;
@@ -604,7 +741,7 @@ function renderPanelOverview(scan) {
       <div class="meta-item"><div class="meta-key">Repository</div><div class="meta-val">${scan.repo_path||scan.repo_url||'—'}</div></div>
       <div class="meta-item"><div class="meta-key">Started</div><div class="meta-val">${fmtDate(scan.started_at)||'—'}</div></div>
       <div class="meta-item"><div class="meta-key">Tools</div><div class="meta-val">${(scan.tools||[]).join(', ')||'—'}</div></div>
-      <div class="meta-item"><div class="meta-key">Findings</div><div class="meta-val">${scan.findings_count != null ? scan.findings_count : '—'}</div></div>
+      <div class="meta-item"><div class="meta-key">Packages</div><div class="meta-val">${pkgSummaryHtml(scan.pkg_count, scan.sev_breakdown, scan.status)}</div></div>
     </div>
     ${failedBanner}
     ${scan.status==='running'||scan.status==='started'
@@ -631,25 +768,29 @@ function renderPanelFindings(scan) {
   const dastFindings = findings.filter(f => f.finding_type === 'dast');
   const pkgFindings  = findings.filter(f => f.finding_type !== 'dast');
 
-  // Summary bar — count all (normalise verdict buckets)
+  // Summary bar — count by 4-tier reachability class (fall back to verdict for legacy data)
   const _confirmedVerdicts = new Set(['CONFIRMED','STATICALLY_REACHABLE','DYNAMICALLY_CONFIRMED','DYNAMICALLY_REACHABLE']);
-  const _notReachVerdicts  = new Set(['NOT_OBSERVED','NOT_REACHABLE','UNREACHABLE']);
-  const counts = { CONFIRMED:0, LIKELY:0, POSSIBLE:0, NOT_OBSERVED:0 };
+  const classCounts = { DYNAMICALLY_REACHABLE: 0, STATICALLY_REACHABLE: 0, UNCERTAIN: 0, NOT_REACHABLE: 0 };
   for (const f of findings) {
-    const v = f.verdict || 'NOT_OBSERVED';
-    if (_confirmedVerdicts.has(v))     counts.CONFIRMED++;
-    else if (v === 'LIKELY')           counts.LIKELY++;
-    else if (v === 'POSSIBLE')         counts.POSSIBLE++;
-    else if (_notReachVerdicts.has(v))  counts.NOT_OBSERVED++;
-    else                               counts.LIKELY++;  // fallback
+    if (f.finding_type === 'dast') continue;
+    const rc = f.reachability_class;
+    if (rc && classCounts.hasOwnProperty(rc)) {
+      classCounts[rc]++;
+    } else {
+      // Legacy fallback: derive from verdict
+      const v = f.verdict || 'NOT_OBSERVED';
+      if (v === 'CONFIRMED')                classCounts.DYNAMICALLY_REACHABLE++;
+      else if (v === 'LIKELY')              classCounts.STATICALLY_REACHABLE++;
+      else if (v === 'POSSIBLE')            classCounts.UNCERTAIN++;
+      else                                  classCounts.NOT_REACHABLE++;
+    }
   }
-  const notReachCount = counts.NOT_OBSERVED;
   const summaryBar = `
     <div class="findings-summary">
-      ${counts.CONFIRMED   ? `<span class="fsumm red">  ● ${counts.CONFIRMED} CONFIRMED</span>`   : ''}
-      ${counts.LIKELY      ? `<span class="fsumm amber">● ${counts.LIKELY} LIKELY</span>`      : ''}
-      ${counts.POSSIBLE    ? `<span class="fsumm blue"> ● ${counts.POSSIBLE} POSSIBLE</span>`    : ''}
-      ${notReachCount       ? `<span class="fsumm dim">  ● ${notReachCount} Not Reachable</span>`: ''}
+      ${classCounts.DYNAMICALLY_REACHABLE ? `<span class="fsumm red">   ● ${classCounts.DYNAMICALLY_REACHABLE} Dynamically Reachable</span>`  : ''}
+      ${classCounts.STATICALLY_REACHABLE  ? `<span class="fsumm amber"> ● ${classCounts.STATICALLY_REACHABLE} Statically Reachable</span>`   : ''}
+      ${classCounts.UNCERTAIN             ? `<span class="fsumm blue">  ● ${classCounts.UNCERTAIN} Uncertain</span>`                          : ''}
+      ${classCounts.NOT_REACHABLE         ? `<span class="fsumm dim">   ● ${classCounts.NOT_REACHABLE} Not Reachable</span>`                  : ''}
     </div>`;
 
   // ── DAST section ──────────────────────────────────────────────────
@@ -690,6 +831,7 @@ function renderPanelFindings(scan) {
 
   // ── Package findings table ────────────────────────────────────────
   // Group by package — merge CVEs per package
+  const _tierRank = { DYNAMICALLY_REACHABLE: 4, STATICALLY_REACHABLE: 3, UNCERTAIN: 2, NOT_REACHABLE: 1 };
   const pkgMap = {};
   for (const f of pkgFindings) {
     const pkg = f.package || f.cve_id || 'unknown';
@@ -703,6 +845,11 @@ function renderPanelFindings(scan) {
       pkgMap[pkg].confidence = f.confidence;
       pkgMap[pkg].risk_score = f.risk_score;
     }
+    // Upgrade reachability_class to highest tier seen across CVEs
+    if ((_tierRank[f.reachability_class]||0) > (_tierRank[pkgMap[pkg].reachability_class]||0)) {
+      pkgMap[pkg].reachability_class = f.reachability_class;
+      pkgMap[pkg].static_subtype = f.static_subtype;
+    }
     // Merge evidence
     if (f.import_detected) pkgMap[pkg].import_detected = true;
     if (f.call_chain_exists) pkgMap[pkg].call_chain_exists = true;
@@ -714,28 +861,45 @@ function renderPanelFindings(scan) {
       if (!pkgMap[pkg].allFunctions) pkgMap[pkg].allFunctions = [];
       pkgMap[pkg].allFunctions.push(f.function);
     }
-    // Track finding types for status line
+    // Track finding types for status line (kept for legacy fallback)
     if (f.finding_type) {
       if (!pkgMap[pkg].findingTypes) pkgMap[pkg].findingTypes = new Set();
       pkgMap[pkg].findingTypes.add(f.finding_type);
     }
   }
 
-  const pkgCards = Object.entries(pkgMap).map(([pkg, f]) => {
+  const pkgCards = Object.entries(pkgMap)
+    .sort(([, a], [, b]) => {
+      const tierA = _tierRank[a.reachability_class] || 0;
+      const tierB = _tierRank[b.reachability_class] || 0;
+      if (tierB !== tierA) return tierB - tierA;   // higher tier first
+      // secondary: severity
+      const sevRank = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
+      return (sevRank[b.severity] || 0) - (sevRank[a.severity] || 0);
+    })
+    .map(([pkg, f]) => {
     const verdict = f.verdict || 'NOT_OBSERVED';
-    const verdictMap = {
-      'CONFIRMED':             { label: 'CONFIRMED',             cls: 'CONFIRMED' },
-      'LIKELY':                { label: 'LIKELY',                 cls: 'LIKELY' },
-      'POSSIBLE':              { label: 'POSSIBLE',              cls: 'POSSIBLE' },
-      'NOT_OBSERVED':          { label: 'NOT REACHABLE',         cls: 'not-reachable' },
-      'STATICALLY_REACHABLE':  { label: 'STATICALLY REACHABLE',  cls: 'CONFIRMED' },
-      'DYNAMICALLY_CONFIRMED': { label: 'DYNAMICALLY CONFIRMED', cls: 'CONFIRMED' },
+    const rc = f.reachability_class || null;
+    const subtype = f.static_subtype || null;
+
+    // Badge: prefer reachability_class over raw verdict for clarity
+    const rcBadgeMap = {
       'DYNAMICALLY_REACHABLE': { label: 'DYNAMICALLY REACHABLE', cls: 'DYNAMICALLY_REACHABLE' },
-      'NOT_REACHABLE':         { label: 'NOT REACHABLE',         cls: 'not-reachable' },
-      'UNREACHABLE':           { label: 'UNREACHABLE',           cls: 'not-reachable' },
+      'STATICALLY_REACHABLE':  { label: subtype ? `STATIC · ${subtype}` : 'STATICALLY REACHABLE', cls: 'LIKELY' },
+      'UNCERTAIN':             { label: 'UNCERTAIN',              cls: 'POSSIBLE' },
+      'NOT_REACHABLE':         { label: 'NOT REACHABLE',          cls: 'not-reachable' },
     };
-    const vm = verdictMap[verdict] || { label: verdict.replace(/_/g, ' '), cls: 'LIKELY' };
-    const isReachable = _confirmedVerdicts.has(verdict) || verdict === 'LIKELY';
+    const legacyBadgeMap = {
+      'CONFIRMED':             { label: 'CONFIRMED',              cls: 'CONFIRMED' },
+      'LIKELY':                { label: 'LIKELY',                 cls: 'LIKELY' },
+      'POSSIBLE':              { label: 'POSSIBLE',               cls: 'POSSIBLE' },
+      'NOT_OBSERVED':          { label: 'NOT REACHABLE',          cls: 'not-reachable' },
+      'DYNAMICALLY_CONFIRMED': { label: 'DYNAMICALLY CONFIRMED',  cls: 'CONFIRMED' },
+      'UNREACHABLE':           { label: 'UNREACHABLE',            cls: 'not-reachable' },
+    };
+    const vm = (rc ? rcBadgeMap[rc] : null) || legacyBadgeMap[verdict] || { label: verdict.replace(/_/g, ' '), cls: 'LIKELY' };
+    const isReachable = rc === 'DYNAMICALLY_REACHABLE' || rc === 'STATICALLY_REACHABLE'
+      || _confirmedVerdicts.has(verdict) || verdict === 'LIKELY';
     const cardBorder = isReachable ? 'reachable' : 'not-reachable';
 
     // Severity chip
@@ -743,28 +907,45 @@ function renderPanelFindings(scan) {
     const sevCls = sev ? `sev-chip-sm ${sev.toLowerCase()}` : '';
     const sevHtml = sev ? `<span class="${sevCls}">${sev}</span>` : '';
 
-    // --- Status line ---
-    const fTypes = f.findingTypes || new Set();
-    let statusLabel = 'Not Imported';
-    let statusCls = 'status-none';
-    if (fTypes.has('dynamic') || f.has_coverage_hit) {
+    // --- Status line — driven by reachability_class (canonical); legacy heuristic as fallback ---
+    let statusLabel, statusCls;
+    if (rc === 'DYNAMICALLY_REACHABLE') {
       statusLabel = 'Dynamically Reachable';
-      statusCls = 'status-dynamic';
-    } else if (fTypes.has('static') || f.call_chain_exists || f.sink_reachable) {
-      statusLabel = 'Statically Reachable';
-      statusCls = 'status-static';
-    } else if (f.import_detected) {
-      statusLabel = 'Imported';
-      statusCls = 'status-imported';
+      statusCls   = 'status-dynamic';
+    } else if (rc === 'STATICALLY_REACHABLE') {
+      const subtypeLabel = { FUNCTION: 'Statically Reachable (Function)', FILE: 'Statically Reachable (File)', IMPORT: 'Statically Reachable (Import)', TRANSITIVE: 'Statically Reachable (Transitive)' }[subtype] || 'Statically Reachable';
+      statusLabel = subtypeLabel;
+      statusCls   = 'status-static';
+    } else if (rc === 'UNCERTAIN') {
+      statusLabel = 'Uncertain (Taint Only)';
+      statusCls   = 'status-imported';
+    } else if (rc === 'NOT_REACHABLE') {
+      statusLabel = 'Not Reachable';
+      statusCls   = 'status-none';
+    } else {
+      // Legacy fallback
+      const fTypes = f.findingTypes || new Set();
+      if (fTypes.has('dynamic') && (verdict === 'CONFIRMED' || (f.has_coverage_hit && f.has_taint_flow))) {
+        statusLabel = 'Dynamically Reachable'; statusCls = 'status-dynamic';
+      } else if (fTypes.has('dynamic')) {
+        statusLabel = 'Coverage Observed';     statusCls = 'status-static';
+      } else if (fTypes.has('static') || f.call_chain_exists || f.sink_reachable) {
+        statusLabel = 'Statically Reachable';  statusCls = 'status-static';
+      } else if (f.import_detected) {
+        statusLabel = 'Imported';              statusCls = 'status-imported';
+      } else {
+        statusLabel = 'Not Reachable';         statusCls = 'status-none';
+      }
     }
 
-    // --- Path section (only show what we actually know) ---
+    // --- Path section ---
     const pathChecks = [];
-    if (f.import_detected)   pathChecks.push({ hit: true, text: 'Package imported in application code' });
-    if (f.call_chain_exists) pathChecks.push({ hit: true, text: 'Call graph confirms execution path' });
-    if (f.sink_reachable)    pathChecks.push({ hit: true, text: 'Vulnerable sink is reachable' });
-    if (f.has_taint_flow)    pathChecks.push({ hit: true, text: 'Taint flow from user input to sink' });
-    if (f.has_coverage_hit)  pathChecks.push({ hit: true, text: 'Confirmed at runtime via coverage' });
+    if (f.import_detected)   pathChecks.push({ hit: true,  text: 'Package imported in application code' });
+    if (f.call_chain_exists) pathChecks.push({ hit: true,  text: 'Call graph confirms execution path' });
+    if (f.sink_reachable)    pathChecks.push({ hit: true,  text: 'Vulnerable sink is reachable' });
+    if (f.has_taint_flow)    pathChecks.push({ hit: true,  text: 'Taint flow from user input to sink' });
+    if (f.has_coverage_hit)  pathChecks.push({ hit: true,  text: 'Confirmed at runtime via coverage' });
+    if (rc === 'UNCERTAIN')  pathChecks.push({ hit: false, text: 'Taint signal only — no call chain or runtime coverage' });
     if (!pathChecks.length)  pathChecks.push({ hit: false, text: 'No reachability evidence found' });
     const pathHtml = pathChecks.map(p =>
       `<div class="path-check ${p.hit ? 'hit' : 'miss'}">${p.hit ? '✔' : '✘'} ${p.text}</div>`

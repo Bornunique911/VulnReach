@@ -6,6 +6,7 @@ import logging
 from typing import Any, Dict, List
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agents.runner import AgentRunner
@@ -18,7 +19,7 @@ from api.auth import (
     verify_password,
 )
 from core.orchestrator import Orchestrator
-from config.schema import load_config
+from config.schema import load_config, default_config
 from core.models import ScanContext, AgentResult
 from correlation.service import CorrelationService
 from storage.repository import PostgresRepository
@@ -35,7 +36,7 @@ storage = PostgresRepository(os.getenv("DATABASE_URL"))
 runner = AgentRunner(storage)
 correlation_service = CorrelationService()
 orchestrator = Orchestrator(storage, runner, correlation_service)
-AVAILABLE_TOOLS: List[str] = ["git", "trivy", "tainter", "python_reachability", "dynamic_reachability", "intelligent_dast", "semgrep", "route_extractor", "metadata"]
+AVAILABLE_TOOLS: List[str] = ["git", "trivy", "tainter", "python_reachability", "dynamic_reachability", "intelligent_dast", "semgrep", "route_extractor", "metadata", "pytest_coverage", "openapi_generator"]
 
 
 # ── Seed admin user on startup ───────────────────────────────────
@@ -89,14 +90,20 @@ async def start_scan(
 ):
     repo_path = payload.get("repo_path")
     repo_url = payload.get("repo_url")
-    config_path = payload.get("config_path")
-    if (not repo_path and not repo_url) or not config_path:
-        raise HTTPException(status_code=400, detail="repo_path or repo_url and config_path are required")
+    config_path = payload.get("config_path") or ""
+    if not repo_path and not repo_url:
+        raise HTTPException(status_code=400, detail="repo_path or repo_url is required")
+    # config_path is optional when repo_url is provided (default config used, or auto-discovered post-clone)
+    if not config_path and not repo_url:
+        raise HTTPException(status_code=400, detail="config_path is required for local repo scans")
 
-    try:
-        config = load_config(config_path)
-    except (FileNotFoundError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    if config_path:
+        try:
+            config = load_config(config_path)
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    else:
+        config = default_config()
 
     requested_tools = payload.get("tools")
     tools = list(requested_tools if requested_tools else (config.scan.tools or []))
@@ -129,9 +136,52 @@ async def get_scan(scan_id: str, _principal: UserPrincipal = Depends(require_use
     return {"scan_id": scan_id, **scan}
 
 
+@app.get("/scan/{scan_id}/raw")
+async def list_raw_tools(scan_id: str, _principal: UserPrincipal = Depends(require_user)):
+    """List all tool names that have raw output stored for this scan."""
+    tools = storage.list_raw_tools(scan_id)
+    if not tools:
+        # Check if scan exists at all
+        scan = storage.get_scan(scan_id)
+        if not scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+    return {"scan_id": scan_id, "tools": tools}
+
+
+@app.get("/scan/{scan_id}/raw/{tool_name}")
+async def get_raw_output(scan_id: str, tool_name: str, _principal: UserPrincipal = Depends(require_user)):
+    """Get the raw output payload for a specific tool in a scan."""
+    payload = storage.get_raw_output(scan_id, tool_name)
+    if payload is None:
+        scan = storage.get_scan(scan_id)
+        if not scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        raise HTTPException(status_code=404, detail=f"No raw output for tool '{tool_name}'")
+    return {"scan_id": scan_id, "tool_name": tool_name, "output": payload}
+
+
 @app.get("/scans")
 async def list_scans(_principal: UserPrincipal = Depends(require_user)):
     return {"scans": storage.list_scans()}
+
+
+@app.get("/scan/{scan_id}/export/pdf")
+async def export_scan_pdf(scan_id: str, _principal: UserPrincipal = Depends(require_user)):
+    """Generate and download a PDF report for a scan."""
+    try:
+        scan = storage.get_scan(scan_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Invalid scan id")
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    from api.export import build_pdf
+    buf = build_pdf(scan_id, scan)
+    filename = f"vulnreach-{scan_id[:8]}.pdf"
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ── Public endpoints ─────────────────────────────────────────────

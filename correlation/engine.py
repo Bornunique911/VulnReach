@@ -3,6 +3,8 @@ from typing import Literal
 Severity = Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"]
 Verdict = Literal["CONFIRMED", "LIKELY", "POSSIBLE", "NOT_OBSERVED"]
 Exposure = Literal["public", "private", "internal"]
+ReachabilityClass = Literal["DYNAMICALLY_REACHABLE", "STATICALLY_REACHABLE", "NOT_REACHABLE", "UNCERTAIN"]
+StaticSubtype = Literal["FUNCTION", "FILE", "IMPORT", "TRANSITIVE"]
 
 
 _SEVERITY_SCORES: dict[Severity, int] = {
@@ -34,18 +36,25 @@ _PRIORITY_THRESHOLDS = (
     (3.0, "P3"),
 )
 
+# Packages whose execution is primarily driven by framework bootstrap/routing,
+# not by direct application code calling into the library.
+_FRAMEWORK_PACKAGES = {
+    "django", "flask", "fastapi", "starlette", "tornado",
+    "aiohttp", "bottle", "sanic", "quart", "falcon",
+}
+
 
 def reachability_verdict(import_detected: bool, call_chain_exists: bool, sink_reachable: bool) -> Verdict:
-    """Static reachability verdict based on import / call-chain evidence only.
+    """Static reachability verdict based on import / call-chain / sink evidence.
 
     Rules:
-    - call_chain_exists (static trace to sink) -> LIKELY
-    - import_detected only -> POSSIBLE
-    - none -> NOT_OBSERVED
-
-    Note: sink_reachable is intentionally ignored here; it belongs to the
-    dynamic verdict path (see dynamic_reachability_verdict).
+    - import + call_chain + sink_reachable → CONFIRMED (full static trace to sink)
+    - import + call_chain (no sink proof)  → LIKELY
+    - import only                          → POSSIBLE
+    - none                                 → NOT_OBSERVED
     """
+    if import_detected and call_chain_exists and sink_reachable:
+        return "CONFIRMED"
     if import_detected and call_chain_exists:
         return "LIKELY"
     if import_detected:
@@ -107,3 +116,71 @@ def apply_policy(severity: Severity, verdict: Verdict, rules: list[dict]) -> str
             return "BLOCK"
     return "PASS"
 
+
+def classify_reachability(
+    coverage_hit: bool,
+    call_chain_exists: bool,
+    import_detected: bool,
+    function: str | None,
+    file: str | None,
+    evidence_type: str,
+    package: str = "",
+) -> tuple[ReachabilityClass, StaticSubtype | None]:
+    """Classify vulnerability reachability into one of 4 tiers.
+
+    Coverage.json is the ground truth for runtime execution. Classification rules:
+
+    1. DYNAMICALLY_REACHABLE
+       coverage hit AND (call_chain_exists OR a specific function was identified)
+       → the vulnerable code was actually executed at runtime
+
+    2. STATICALLY_REACHABLE (no coverage hit)
+       import / file / function evidence present
+       Sub-types:
+         FUNCTION  — specific function name known
+         FILE      — file is known, no specific function
+         IMPORT    — only import was detected
+         TRANSITIVE — framework-driven bootstrap (Django, Flask, etc.)
+
+    3. UNCERTAIN
+       evidence_type == "taint" AND no call chain AND no coverage hit
+       → weak signal only; could be a flow that never actually triggers
+
+    4. NOT_REACHABLE
+       no import, no file/function, no coverage hit
+    """
+    has_function = bool(function)
+    has_file = bool(file)
+
+    # ── Rule 1: DYNAMICALLY REACHABLE ────────────────────────────────────────
+    # Coverage is ground truth. Require at least call-chain OR function evidence
+    # so we don't promote import-time-only hits to dynamic without a call trace.
+    if coverage_hit and (call_chain_exists or has_function):
+        return "DYNAMICALLY_REACHABLE", None
+
+    # ── Rule 3: UNCERTAIN (checked before static to catch taint-only entries) ─
+    if evidence_type == "taint" and not call_chain_exists and not coverage_hit:
+        return "UNCERTAIN", None
+
+    # ── Rule 2: STATICALLY REACHABLE ─────────────────────────────────────────
+    if import_detected or has_file or has_function:
+        pkg_norm = package.lower().replace("-", "_").replace(".", "_")
+        # Strip common prefixes/suffixes to normalise "python-django" → "django"
+        for prefix in ("python_", "py_"):
+            if pkg_norm.startswith(prefix):
+                pkg_norm = pkg_norm[len(prefix):]
+        for suffix in ("_python",):
+            if pkg_norm.endswith(suffix):
+                pkg_norm = pkg_norm[: -len(suffix)]
+
+        if pkg_norm in _FRAMEWORK_PACKAGES and not has_function:
+            return "STATICALLY_REACHABLE", "TRANSITIVE"
+        if has_function:
+            return "STATICALLY_REACHABLE", "FUNCTION"
+        if has_file:
+            return "STATICALLY_REACHABLE", "FILE"
+        # import_detected only
+        return "STATICALLY_REACHABLE", "IMPORT"
+
+    # ── Rule 4: NOT REACHABLE ─────────────────────────────────────────────────
+    return "NOT_REACHABLE", None

@@ -16,7 +16,7 @@ scan:
   openapi_generator:
     enabled: false
   intelligent_dast:
-    enabled: true
+    enabled: false
     provider: ollama
     model: qwen3-coder:480b-cloud
     max_iter: 5

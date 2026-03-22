@@ -1,13 +1,17 @@
 import asyncio
-import json
+import logging
 import re
-import shutil
+import tempfile
 from pathlib import Path
 from typing import Optional
-from uuid import uuid4
 
 from core.agent import BaseAgent
 from core.models import AgentResult, ScanContext
+
+logger = logging.getLogger(__name__)
+
+# Config filenames to look for inside the cloned repo, in priority order
+_CONFIG_CANDIDATES = ["vulnreach.yaml", "vulnreach.yml", "scan.yml", "scan.yaml"]
 
 
 class GitAgent(BaseAgent):
@@ -20,18 +24,14 @@ class GitAgent(BaseAgent):
         if not context.repo_url:
             return AgentResult(tool_name=self.tool_name, findings=[], metadata={"error": "missing_repo_url"})
 
-        repo_name = self._safe_repo_name(self._repo_name(context.repo_url, context.repo_path))
-        clone_root = Path(context.clone_root).resolve()
-        findings_root = Path(context.findings_root).resolve()
-        clone_root.mkdir(parents=True, exist_ok=True)
-        findings_root.mkdir(parents=True, exist_ok=True)
+        repo_name = self._safe_repo_name(self._repo_name(context.repo_url))
 
-        scan_dir = context.scan_id or uuid4().hex
-        target_dir = clone_root / repo_name / scan_dir
-        if target_dir.exists():
-            shutil.rmtree(target_dir)
+        # Clone into a fresh temp directory — each scan (including rescans) gets its own isolated copy
+        tmp_dir = tempfile.mkdtemp(prefix=f"vulnreach-{repo_name}-")
+        target_dir = Path(tmp_dir)
+        logger.info(f"[git] Cloning {context.repo_url} → {target_dir}")
 
-        clone_result = await self._run_cmd(["git", "clone", context.repo_url, str(target_dir)])
+        clone_result = await self._run_cmd(["git", "clone", "--depth", "1", context.repo_url, str(target_dir)])
         if clone_result[0] != 0:
             return AgentResult(
                 tool_name=self.tool_name,
@@ -43,18 +43,27 @@ class GitAgent(BaseAgent):
         context.repo_path = str(target_dir)
         context.repo_name = repo_name
 
-        findings_dir = findings_root / repo_name
-        findings_dir.mkdir(parents=True, exist_ok=True)
-        scan_file = self._next_scan_file(findings_dir)
+        # Auto-discover a vulnreach config inside the cloned repo.
+        # Overrides the default config set by the API when no config_path was given.
+        for candidate in _CONFIG_CANDIDATES:
+            candidate_path = target_dir / candidate
+            if candidate_path.exists():
+                try:
+                    from config.schema import load_config
+                    context.config = load_config(str(candidate_path))
+                    context.config_path = str(candidate_path)
+                    logger.info(f"[git] Auto-discovered config: {candidate_path}")
+                    break
+                except Exception as exc:
+                    logger.warning(f"[git] Found {candidate_path} but failed to load: {exc}")
+
         clone_metadata = {
             "repo_url": context.repo_url,
             "repo_name": repo_name,
             "clone_path": str(target_dir),
             "commit": commit,
             "scan_id": context.scan_id,
-            "scan_file": str(scan_file),
         }
-        scan_file.write_text(json.dumps(clone_metadata, indent=2), encoding="utf-8")
 
         return AgentResult(tool_name=self.tool_name, findings=[clone_metadata], metadata={"raw": clone_metadata})
 
@@ -62,25 +71,13 @@ class GitAgent(BaseAgent):
         code, stdout, _ = await self._run_cmd(["git", "-C", str(repo_path), "rev-parse", "HEAD"])
         return stdout.strip() if code == 0 else None
 
-    def _repo_name(self, repo_url: str, repo_path: Optional[str]) -> str:
-        if repo_url:
-            name = repo_url.rstrip("/").split("/")[-1]
-            return name[:-4] if name.endswith(".git") else name
-        if repo_path:
-            return Path(repo_path).name
-        return "unknown"
+    def _repo_name(self, repo_url: str) -> str:
+        name = repo_url.rstrip("/").split("/")[-1]
+        return name[:-4] if name.endswith(".git") else name
 
     def _safe_repo_name(self, name: str) -> str:
         safe = re.sub(r"[^A-Za-z0-9_.-]", "-", name or "repo")
         return safe or "repo"
-
-    def _next_scan_file(self, findings_dir: Path) -> Path:
-        max_idx = 0
-        for path in findings_dir.glob("scan*.json"):
-            suffix = path.stem[4:]
-            if suffix.isdigit():
-                max_idx = max(max_idx, int(suffix))
-        return findings_dir / f"scan{max_idx + 1}.json"
 
     async def _run_cmd(self, cmd: list[str]) -> tuple[int, str, str]:
         proc = await asyncio.create_subprocess_exec(

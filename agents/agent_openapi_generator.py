@@ -103,10 +103,15 @@ class OpenAPIGeneratorAgent(BaseAgent):
         if not repo_path.exists():
             return self._skipped("repo_path_not_found")
 
-        # Only useful if dynamic reachability will run.
-        dockerfile = repo_path / "Dockerfile"
-        if not dockerfile.exists():
-            return self._skipped("no_dockerfile")
+        # Only useful if dynamic reachability will run (needs Dockerfile or docker-compose).
+        has_docker = (repo_path / "Dockerfile").exists()
+        if not has_docker:
+            for compose_name in ("docker-compose.yml", "docker-compose.yaml", "compose.yml"):
+                if (repo_path / compose_name).exists():
+                    has_docker = True
+                    break
+        if not has_docker:
+            return self._skipped("no_dockerfile_or_compose")
 
         # If an OpenAPI spec already exists, nothing to do.
         existing = self._find_existing_spec(repo_path)

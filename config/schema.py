@@ -88,8 +88,8 @@ class ScanConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     scan: ScanSettings
-    risk: RiskSettings
-    policy: PolicySettings
+    risk: RiskSettings = RiskSettings()
+    policy: PolicySettings = PolicySettings()
 
 
 def load_config(path: str) -> ScanConfig:
@@ -106,3 +106,12 @@ def load_config(path: str) -> ScanConfig:
         return ScanConfig.model_validate(raw)
     except ValidationError as exc:  # pragma: no cover - pydantic formats errors
         raise ValueError(f"Invalid config: {exc}")
+
+
+def default_config() -> ScanConfig:
+    """Return a sensible default config for URL-only scans with no config file."""
+    return ScanConfig(
+        scan=ScanSettings(tools=["git", "trivy", "tainter", "python_reachability", "route_extractor"]),
+        risk=RiskSettings(exposure="public"),
+        policy=PolicySettings(block_if=[PolicyRule(severity="CRITICAL", verdict="CONFIRMED")]),
+    )

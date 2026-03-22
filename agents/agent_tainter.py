@@ -73,7 +73,7 @@ class TainterAgent(BaseAgent):
         # ------------------------------------------------------------------
         # Step 4 + 5 — Cross-reference with vulnerabilities and emit findings
         # ------------------------------------------------------------------
-        findings = self._correlate(flows, context.vulnerabilities)
+        findings = self._correlate(flows, context.vulnerabilities, repo_path=repo_path)
 
         return AgentResult(
             tool_name=self.tool_name,
@@ -209,6 +209,7 @@ class TainterAgent(BaseAgent):
         self,
         flows: List[Dict[str, Any]],
         vulnerabilities: List[Dict[str, Any]],
+        repo_path: Optional[Path] = None,
     ) -> List[ReachabilityFinding]:
         """
         Match taint flows to vulnerable packages.
@@ -234,25 +235,69 @@ class TainterAgent(BaseAgent):
             for pkg in explicit_pkgs:
                 flow_packages.add(pkg.lower())
 
-            # Also index sink details
+            # Also index sink details — support both flat and nested formats:
+            #   Flat:   {"function": "yaml.load", "file": "app.py", ...}
+            #   Nested: {"definition": {"module": "yaml", "function": "load"},
+            #            "location":   {"file": "app.py", ...}, "code": "..."}
             sink = flow.get("sink") or {}
-            sink_fn = (sink.get("function") or sink.get("type") or "").lower()
-            sink_file = Path(sink.get("file") or "").name.lower()
+            sink_def = sink.get("definition") or {}
+            sink_loc = sink.get("location") or {}
+
+            # Function: prefer nested definition.function, fall back to flat keys
+            sink_fn = (
+                sink_def.get("function")
+                or sink.get("function")
+                or sink.get("type")
+                or ""
+            ).lower()
+
+            # File: prefer nested location.file, fall back to flat key
+            sink_file = Path(
+                sink_loc.get("file") or sink.get("file") or ""
+            ).name.lower()
+
+            # Module/package: from definition.module (nested format only)
+            sink_module = (sink_def.get("module") or "").lower()
+            if sink_module and len(sink_module) >= 4:
+                flow_packages.add(sink_module)
 
             flow_sinks.append({
                 "function": sink_fn,
                 "file": sink_file,
-                "line": sink.get("line"),
+                "line": sink_loc.get("line") or sink.get("line"),
                 "type": sink.get("type"),
             })
 
             # Heuristic: if the sink file is named after a package (e.g. requests/api.py)
             # extract the parent directory name as a package hint
-            full_sink_path = sink.get("file") or ""
+            full_sink_path = sink_loc.get("file") or sink.get("file") or ""
             parts = Path(full_sink_path).parts
             for part in parts:
                 if len(part) >= 4:  # skip short path components
                     flow_packages.add(part.lower())
+
+            # Sink source file import scan — read the file that contains the
+            # taint sink and extract all top-level imports. This catches cases
+            # where the tainter CLI misclassifies the module (e.g. DRF's
+            # rest_framework.response.Response reported as flask.Response).
+            if repo_path and full_sink_path:
+                try:
+                    p = Path(full_sink_path)
+                    if not p.is_absolute() or not p.exists():
+                        p = repo_path / full_sink_path
+                    if p.exists() and p.suffix == ".py":
+                        import re as _re
+                        src = p.read_text(encoding="utf-8", errors="replace")
+                        for m in _re.finditer(
+                            r"^\s*(?:import|from)\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+                            src,
+                            _re.MULTILINE,
+                        ):
+                            pkg = m.group(1).lower()
+                            if len(pkg) >= 3:
+                                flow_packages.add(pkg)
+                except Exception:
+                    pass
 
         findings: List[ReachabilityFinding] = []
 
@@ -356,4 +401,14 @@ _PYPI_TO_IMPORT: Dict[str, str] = {
     "python-dateutil": "dateutil",
     "mysqlclient": "MySQLdb",
     "pyjwt": "jwt",
+    # Django ecosystem
+    "djangorestframework": "rest_framework",
+    "psycopg2-binary": "psycopg2",
+    "django-cors-headers": "corsheaders",
+    "django-filter": "django_filters",
+    "celery": "celery",
+    # Other common mismatches
+    "python-jose": "jose",
+    "python-multipart": "multipart",
+    "httpx": "httpx",
 }

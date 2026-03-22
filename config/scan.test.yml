@@ -6,6 +6,7 @@ scan:
     - python_reachability
     - tainter
     - route_extractor
+    
   runtime:
 #    command: "python -c 'print(1)'"
     enabled: true         # set to true to enable dynamic reachability
