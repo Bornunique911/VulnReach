@@ -27,6 +27,22 @@ from typing import Any, Dict, List, Optional, Tuple
 # native / non-Docker use).
 _WORK_BASE = os.environ.get("VULNREACH_WORK_DIR") or tempfile.gettempdir()
 
+# When vulnreach runs inside Docker (DooD), sibling containers' published ports
+# are on the HOST — not reachable via 'localhost' from inside the container.
+# On macOS/Windows Docker Desktop, host.docker.internal resolves to the host.
+# On Linux we fall back to the default bridge gateway (172.17.0.1).
+def _target_host() -> str:
+    """Return the hostname to use when connecting to sibling Docker containers."""
+    if not Path("/.dockerenv").exists():
+        return "localhost"
+    # Prefer an explicit override
+    override = os.environ.get("VULNREACH_TARGET_HOST")
+    if override:
+        return override
+    # host.docker.internal is available on Docker Desktop (macOS/Windows) and
+    # on Linux when --add-host=host.docker.internal:host-gateway is set.
+    return "host.docker.internal"
+
 try:
     import aiohttp
 except ImportError:
@@ -171,7 +187,7 @@ class DynamicReachabilityAgent(BaseTool):
 
         try:
             # Wait for container to become healthy
-            base_url = f"http://localhost:{container_port}"
+            base_url = f"http://{_target_host()}:{container_port}"
             healthy = await self._wait_for_healthy(base_url, timeout=30)
             if not healthy:
                 return AgentResult(
@@ -1143,7 +1159,7 @@ class DynamicReachabilityAgent(BaseTool):
                 )
 
             # Step 4 — Wait for healthy
-            base_url = f"http://localhost:{container_port}"
+            base_url = f"http://{_target_host()}:{container_port}"
             healthy = await self._wait_for_healthy(base_url, timeout=30)
             if not healthy:
                 return AgentResult(
@@ -1679,7 +1695,7 @@ class DynamicReachabilityAgent(BaseTool):
         schemathesis_meta: Dict[str, Any] = {}
 
         try:
-            base_url = f"http://localhost:{container_port}"
+            base_url = f"http://{_target_host()}:{container_port}"
             healthy = await self._wait_for_healthy(base_url, timeout=30)
             if not healthy:
                 return AgentResult(

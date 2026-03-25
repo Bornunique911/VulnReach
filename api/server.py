@@ -91,6 +91,7 @@ async def start_scan(
     repo_path = payload.get("repo_path")
     repo_url = payload.get("repo_url")
     config_path = payload.get("config_path") or ""
+    logger.info("[scan] request: repo_path=%r repo_url=%r config_path=%r", repo_path, repo_url, config_path)
     if not repo_path and not repo_url:
         raise HTTPException(status_code=400, detail="repo_path or repo_url is required")
     # config_path is optional when repo_url is provided (default config used, or auto-discovered post-clone)
@@ -101,6 +102,7 @@ async def start_scan(
         try:
             config = load_config(config_path)
         except (FileNotFoundError, ValueError) as exc:
+            logger.warning("[scan] config load failed: %s", exc)
             raise HTTPException(status_code=400, detail=str(exc))
     else:
         config = default_config()

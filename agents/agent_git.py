@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import re
 import tempfile
 from pathlib import Path
@@ -12,6 +13,10 @@ logger = logging.getLogger(__name__)
 
 # Config filenames to look for inside the cloned repo, in priority order
 _CONFIG_CANDIDATES = ["vulnreach.yaml", "vulnreach.yml", "scan.yml", "scan.yaml"]
+
+# When running inside Docker (DooD) all temp dirs must live under the bind-mounted
+# work dir so the host Docker daemon can resolve them as build contexts / volumes.
+_WORK_BASE = os.environ.get("VULNREACH_WORK_DIR") or tempfile.gettempdir()
 
 
 class GitAgent(BaseAgent):
@@ -26,8 +31,9 @@ class GitAgent(BaseAgent):
 
         repo_name = self._safe_repo_name(self._repo_name(context.repo_url))
 
-        # Clone into a fresh temp directory — each scan (including rescans) gets its own isolated copy
-        tmp_dir = tempfile.mkdtemp(prefix=f"vulnreach-{repo_name}-")
+        # Clone into _WORK_BASE (bind-mounted in Docker) so the host Docker daemon
+        # can resolve it as a build context for sibling containers.
+        tmp_dir = tempfile.mkdtemp(prefix=f"vulnreach-{repo_name}-", dir=_WORK_BASE)
         target_dir = Path(tmp_dir)
         logger.info(f"[git] Cloning {context.repo_url} → {target_dir}")
 
