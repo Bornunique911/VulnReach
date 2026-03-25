@@ -1,0 +1,44 @@
+services:
+  vulnreach:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # DooD: give vulnreach access to the host Docker daemon
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Shared work dir: coverage volumes + temp Dockerfiles + cloned repos
+      # MUST be a bind mount (not a named volume) so the host Docker daemon
+      # can resolve these paths when spawning sibling containers.
+      - /tmp/vulnreach:/tmp/vulnreach
+      # Persist scan results and config across restarts
+      - ./scans:/app/scans
+      - ./config:/app/config
+    environment:
+      - DATABASE_URL=postgresql://vulnreach:vulnreach@db:5432/vulnreach
+      # All temp dirs (coverage, patched Dockerfiles, cloned repos) go here.
+      # This path is a bind mount above, so it is visible to the host Docker daemon.
+      - VULNREACH_WORK_DIR=/tmp/vulnreach
+    env_file:
+      - .env.local
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: vulnreach
+      POSTGRES_USER: vulnreach
+      POSTGRES_PASSWORD: vulnreach
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vulnreach"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:

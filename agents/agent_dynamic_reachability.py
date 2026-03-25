@@ -21,6 +21,12 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# When running inside Docker (DooD), all temp dirs must live on a path that is
+# bind-mounted to the host so the host Docker daemon can resolve volume paths.
+# Set VULNREACH_WORK_DIR to that mount point (default: system temp dir for
+# native / non-Docker use).
+_WORK_BASE = os.environ.get("VULNREACH_WORK_DIR") or tempfile.gettempdir()
+
 try:
     import aiohttp
 except ImportError:
@@ -475,7 +481,7 @@ class DynamicReachabilityAgent(BaseTool):
                 return None, None, {"error": skip_reason}
 
             # Write patched Dockerfile to a temp dir — NEVER overwrite the original.
-            workdir = tempfile.mkdtemp(prefix="vulnreach_dynamic_")
+            workdir = tempfile.mkdtemp(prefix="vulnreach_dynamic_", dir=_WORK_BASE)
             patched_path = Path(workdir) / "Dockerfile"
             patched_path.write_text(patched_content, encoding="utf-8")
 
@@ -528,7 +534,7 @@ class DynamicReachabilityAgent(BaseTool):
         # Kill any orphaned containers from previous runs on the same port.
         await self._cleanup_port_conflicts(container_port)
 
-        coverage_dir = tempfile.mkdtemp(prefix="vulnreach_cov_")
+        coverage_dir = tempfile.mkdtemp(prefix="vulnreach_cov_", dir=_WORK_BASE)
 
         proc = await asyncio.create_subprocess_exec(
             "docker", "run", "-d",
@@ -1069,7 +1075,7 @@ class DynamicReachabilityAgent(BaseTool):
         coverage_wait = runtime.coverage_wait
         container_port = runtime.container_port
 
-        coverage_dir = tempfile.mkdtemp(prefix="vulnreach_cov_")
+        coverage_dir = tempfile.mkdtemp(prefix="vulnreach_cov_", dir=_WORK_BASE)
         patched_dockerfile_path: Optional[str] = None
 
         # Step 1 — Patch the Dockerfile used by the target service

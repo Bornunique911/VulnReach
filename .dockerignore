@@ -1,0 +1,31 @@
+# Ignore directories
+.git
+node_modules
+__pycache__
+temp/
+dist/
+tests/
+docs/
+.hypothesis/
+labs/
+output/
+reviews/
+scipts/
+scans/
+
+
+# Ignore specific file types
+*.log
+*.md
+.env
+.github
+.vscode
+
+
+# Allow a specific file even if a pattern above would ignore it
+!README.md
+DAST.md
+EXECUTIVE_SUMMARY.md
+PRODUCT_DOCUMENT.md
+README.md
+TODO-PRIVATE.md
