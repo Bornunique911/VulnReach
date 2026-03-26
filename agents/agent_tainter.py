@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -48,15 +47,13 @@ class TainterAgent(BaseAgent):
         if not repo_path.exists():
             return self._skipped("repo_path_not_found")
 
-        tainter_bin = shutil.which("tainter")
-        if not tainter_bin:
-            logger.warning("[tainter] tainter not found on PATH — skipping")
-            return self._skipped("tainter_not_on_path")
-
         # ------------------------------------------------------------------
         # Step 2 — Run tainter scan
         # ------------------------------------------------------------------
-        raw_output, scan_meta = await self._run_scan(tainter_bin, repo_path)
+        raw_output, scan_meta = await self._run_scan(repo_path)
+        if scan_meta.get("error") == "tainter_not_on_path":
+            logger.warning("[tainter] tainter not found on PATH — skipping")
+            return self._skipped("tainter_not_on_path")
         if raw_output is None:
             return AgentResult(
                 tool_name=self.tool_name,
@@ -93,21 +90,24 @@ class TainterAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def _run_scan(
-        self, tainter_bin: str, repo_path: Path
+        self, repo_path: Path
     ) -> Tuple[Optional[str], Dict[str, Any]]:
         """
         Run: tainter scan <repo_path> --format json
 
         Returns (stdout_text, meta). stdout_text is None on failure.
         """
-        cmd = ["/Library/Frameworks/Python.framework/Versions/3.11/bin/tainter", "scan", str(repo_path), "--format", _TAINTER_FORMAT]
+        cmd = ["tainter", "scan", str(repo_path), "--format", _TAINTER_FORMAT]
         logger.info(f"[tainter] Running: {' '.join(cmd)}")
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            return None, {"error": "tainter_not_on_path"}
 
         try:
             stdout, stderr = await asyncio.wait_for(

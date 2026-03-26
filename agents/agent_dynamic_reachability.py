@@ -10,6 +10,7 @@ Flow (per DYNAMIC_ANALYSIS.MD):
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import logging
@@ -19,7 +20,7 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # When running inside Docker (DooD), all temp dirs must live on a path that is
 # bind-mounted to the host so the host Docker daemon can resolve volume paths.
@@ -55,16 +56,114 @@ logger = logging.getLogger(__name__)
 
 # Known PyPI name → importable package name mappings for correlation
 _PYPI_TO_IMPORT: Dict[str, str] = {
+    # Image / media
     "pillow": "PIL",
+    "opencv-python": "cv2",
+    "opencv-python-headless": "cv2",
+    # ML / data science
     "scikit-learn": "sklearn",
+    "tensorflow-cpu": "tensorflow",
+    "tf-nightly": "tensorflow",
+    # HTML / XML parsing
     "beautifulsoup4": "bs4",
+    "lxml": "lxml",
+    "defusedxml": "defusedxml",
+    # Config / serialization
     "pyyaml": "yaml",
+    "python-multipart": "multipart",
+    "python-dotenv": "dotenv",
+    "python-decouple": "decouple",
+    # Date / time
     "python-dateutil": "dateutil",
+    # Database drivers
     "mysqlclient": "MySQLdb",
+    "psycopg2-binary": "psycopg2",
+    "psycopg2": "psycopg2",
+    "asyncpg": "asyncpg",
+    "aiomysql": "aiomysql",
+    "pymysql": "pymysql",
+    "cx-oracle": "cx_Oracle",
+    # Auth / crypto
+    "pyjwt": "jwt",
+    "python-jose": "jose",
+    "pycryptodome": "Crypto",
+    "pycryptodomex": "Cryptodome",
+    "pyopenssl": "OpenSSL",
+    "argon2-cffi": "argon2",
+    "python-ldap": "ldap",
+    # Web frameworks / extensions
+    "djangorestframework": "rest_framework",
+    "django-rest-framework": "rest_framework",
+    "django-allauth": "allauth",
+    "django-cors-headers": "corsheaders",
+    "flask-login": "flask_login",
+    "flask-sqlalchemy": "flask_sqlalchemy",
+    "flask-wtf": "flask_wtf",
+    "flask-cors": "flask_cors",
+    "flask-jwt-extended": "flask_jwt_extended",
+    "flask-restful": "flask_restful",
+    # ORM / data
+    "tortoise-orm": "tortoise",
+    "elasticsearch-dsl": "elasticsearch_dsl",
+    # Messaging
+    "kafka-python": "kafka",
+    "confluent-kafka": "confluent_kafka",
+    # gRPC / protobuf
+    "grpcio": "grpc",
+    # Serialization
+    "attrs": "attr",
+    "pydantic-settings": "pydantic_settings",
+    # Slugify / text
+    "python-slugify": "slugify",
+    "unidecode": "unidecode",
+    # Testing
+    "factory-boy": "factory",
+    "vcrpy": "vcr",
+    # Serial
+    "pyserial": "serial",
+    # Misc
+    "charset-normalizer": "charset_normalizer",
+    "faker": "faker",
+    "markdown": "markdown",
 }
 
 # Minimum package name length to use as a substring match (avoids 're', 'os', etc.)
 _MIN_PKG_MATCH_LEN = 4
+
+
+def _parse_file_imports(source: str) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Parse import statements from Python source using the AST.
+
+    Returns:
+        alias_to_pkg:    {alias_or_module_name → top_level_pkg}
+                         Covers `import X`, `import X as Y`, `import X.Y as Z`
+        imported_names:  {bare_name → top_level_pkg}
+                         Covers `from X import Y`, `from X import Y as Z`
+
+    All keys/values are lowercased.  Call-site resolution works like this:
+        `alias.method(...)`  → look up alias in alias_to_pkg
+        `bare_name(...)`     → look up bare_name in imported_names
+    """
+    alias_to_pkg: Dict[str, str] = {}
+    imported_names: Dict[str, str] = {}
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return alias_to_pkg, imported_names
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                top = alias.name.split(".")[0].lower()
+                key = (alias.asname or alias.name.split(".")[0]).lower()
+                alias_to_pkg[key] = top
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            top = node.module.split(".")[0].lower()
+            for alias in node.names:
+                key = (alias.asname or alias.name).lower()
+                imported_names[key] = top
+
+    return alias_to_pkg, imported_names
 
 
 class DynamicReachabilityAgent(BaseTool):
@@ -427,7 +526,11 @@ class DynamicReachabilityAgent(BaseTool):
         coverage_block = (
             "\n# Injected by VulnReach dynamic agent\n"
             + copy_hooks_line
-            + "RUN printf '[run]\\nsource = .\\ndata_file = /tmp/.coverage\\n"
+            + "RUN printf '[run]\\n"
+            "omit = */pip/*,*/setuptools/*,*/pkg_resources/*,*/coverage/*,"
+            "*/distutils/*,*/ensurepip/*,*/site-packages/test*,"
+            "*/site-packages/_*\\n"
+            "data_file = /tmp/.coverage\\n"
             "parallel = true\\nsigterm = true\\nconcurrency = multiprocessing\\n'"
             " > /app/.coveragerc\n"
             "RUN python -c \"import sysconfig; print(sysconfig.get_path('purelib'))\""
@@ -915,27 +1018,101 @@ class DynamicReachabilityAgent(BaseTool):
                     hit_functions.add(func_name)
                     hit_functions.add(f"{rel}:{func_name}")
 
-        # Strategy 2 prep: scan executed app files for import statements.
-        # Build a set of packages imported by files that were executed at runtime.
-        runtime_imported_packages: set[str] = set()
+        # Strategy 2 prep: AST-aware import + call-site line analysis.
+        #
+        # For each executed file we build:
+        #   pkg_import_lines[pkg]   → {(file_path, lineno)} where `import pkg` / `from pkg` appears
+        #   pkg_callsite_lines[pkg] → {(file_path, lineno)} where pkg is actively called
+        #   runtime_imported_packages → fallback set of all imported top-level pkg names
+        #
+        # Confidence levels (strongest first):
+        #   call-site line executed  → 0.80  (pkg was actively called at a confirmed line)
+        #   import line executed     → 0.65  (pkg was loaded at runtime)
+        #   file-level fallback      → 0.40  (file ran + imports pkg, but line unconfirmed)
+        #
+        # AST parsing resolves aliases:
+        #   `import sqlalchemy as sa`  → sa.execute( maps to sqlalchemy
+        #   `from flask import render_template` → render_template( maps to flask
+
+        # Per-file executed line sets keyed by the path as it appears in coverage.json
+        file_executed_lines: Dict[str, Set[int]] = {}
+        for file_path, file_data in coverage_data.get("files", {}).items():
+            file_executed_lines[file_path] = set(file_data.get("executed_lines", []))
+
+        pkg_import_lines: Dict[str, Set[Tuple[str, int]]] = {}
+        pkg_callsite_lines: Dict[str, Set[Tuple[str, int]]] = {}
+        runtime_imported_packages: Set[str] = set()
+
+        # Common container WORKDIR prefixes to strip when resolving paths against repo_path.
+        # Coverage.json from inside a container has paths like /app/api/views.py but the
+        # file lives at <repo_path>/api/views.py on the host.
+        _CONTAINER_PREFIXES = ("/app/", "/code/", "/srv/", "/usr/src/app/", "/home/app/")
+
         for file_path in hit_files_full:
             try:
                 p = Path(file_path)
-                # Coverage.json may contain relative paths (e.g. "src/app.py" from
-                # inside a Docker container). Resolve against repo_path when the
-                # path doesn't exist as-is.
-                if not p.is_absolute() or not p.exists():
-                    if repo_path is not None:
-                        p = repo_path / file_path
-                if not p.exists() or not p.suffix == ".py":
+                # 1. Try the path as-is (works when vulnreach runs natively, not in Docker)
+                if not p.exists() and repo_path is not None:
+                    # 2. Strip known container WORKDIR prefixes and join with repo_path
+                    resolved = None
+                    for prefix in _CONTAINER_PREFIXES:
+                        if file_path.startswith(prefix):
+                            candidate = repo_path / file_path[len(prefix):]
+                            if candidate.exists():
+                                resolved = candidate
+                                break
+                    # 3. Fallback: treat path as relative to repo_path
+                    if resolved is None:
+                        rel = p.name  # last resort: just the filename
+                        candidate = repo_path / p.relative_to(p.anchor) if p.is_absolute() else repo_path / file_path
+                        if not candidate.exists():
+                            candidate = repo_path / rel
+                        if candidate.exists():
+                            resolved = candidate
+                    p = resolved if resolved else p
+                if not p or not p.exists() or p.suffix != ".py":
                     continue
                 source = p.read_text(encoding="utf-8", errors="replace")
-                for m in re.finditer(
-                    r"^\s*(?:import|from)\s+([a-zA-Z_][a-zA-Z0-9_]*)",
-                    source,
-                    re.MULTILINE,
-                ):
-                    runtime_imported_packages.add(m.group(1).lower())
+
+                # --- AST pass: build alias maps for this file ---
+                alias_to_pkg, imported_names = _parse_file_imports(source)
+
+                # Record all resolved top-level packages (for fallback)
+                for pkg in alias_to_pkg.values():
+                    runtime_imported_packages.add(pkg)
+                for pkg in imported_names.values():
+                    runtime_imported_packages.add(pkg)
+
+                # --- Line pass: record import lines and call-site lines ---
+                lines = source.splitlines()
+                for lineno, line in enumerate(lines, start=1):
+                    stripped = line.strip()
+
+                    # Import line: resolve to top-level pkg via AST alias map
+                    if stripped.startswith("import ") or stripped.startswith("from "):
+                        m = re.match(
+                            r"^\s*(?:import|from)\s+([a-zA-Z_][a-zA-Z0-9_]*)", line
+                        )
+                        if m:
+                            raw = m.group(1).lower()
+                            # Prefer AST-resolved name, fall back to raw token
+                            pkg = alias_to_pkg.get(raw) or imported_names.get(raw) or raw
+                            pkg_import_lines.setdefault(pkg, set()).add((file_path, lineno))
+
+                    # Call-site line: `alias.method(` or `bare_name(`
+                    # Use AST alias maps so `sa.execute(` → sqlalchemy
+                    for cm in re.finditer(
+                        r"\b([a-zA-Z_][a-zA-Z0-9_]*)(?:\.([a-zA-Z_]\w*))?\s*\(", line
+                    ):
+                        caller = cm.group(1).lower()
+                        # Resolve via alias_to_pkg (e.g. sa → sqlalchemy)
+                        resolved = alias_to_pkg.get(caller)
+                        if resolved:
+                            pkg_callsite_lines.setdefault(resolved, set()).add((file_path, lineno))
+                        # Resolve via imported_names (e.g. render_template → flask)
+                        resolved2 = imported_names.get(caller)
+                        if resolved2:
+                            pkg_callsite_lines.setdefault(resolved2, set()).add((file_path, lineno))
             except Exception:
                 pass
 
@@ -983,20 +1160,49 @@ class DynamicReachabilityAgent(BaseTool):
             if not cves:
                 cves = [None]
 
-            # Strategy 1: Direct library path/function in coverage
+            # Strategy 1: Direct library path/function in coverage.
+            # Now that coveragerc no longer restricts source to app-only, site-packages
+            # files appear in coverage data. Match against full paths (hit_files_full)
+            # so that e.g. "requests" matches
+            # "/usr/local/lib/python3.11/site-packages/requests/adapters.py".
             dynamically_hit = False
             if len(import_name) >= _MIN_PKG_MATCH_LEN:
-                dynamically_hit = any(
-                    import_name in f.lower() for f in hit_files
-                ) or any(
-                    import_name in f.lower() for f in hit_functions
+                dynamically_hit = (
+                    any(import_name in f.lower() for f in hit_files)
+                    or any(import_name in f.lower() for f in hit_functions)
+                    or any(
+                        f"/site-packages/{import_name}" in f.lower()
+                        or f"/site-packages/{import_name}/" in f.lower()
+                        for f in hit_files_full
+                    )
                 )
 
-            # Strategy 2a: Executed app file imports this package (indirect,
-            # file-level — treated as import-time observation).
+            # Strategy 2a: Line-level import / call-site check.
+            # Sub-levels (strongest first):
+            #   2a-call: a call-site line for this pkg was in executed_lines → 0.80
+            #   2a-import: an import line for this pkg was in executed_lines  → 0.65
+            #   2a-file: file ran and imports pkg but line not confirmed       → 0.40
             import_in_executed = False
+            import_line_hit = False    # import line itself executed
+            callsite_line_hit = False  # call-site line executed
             if not dynamically_hit:
-                import_in_executed = import_name in runtime_imported_packages
+                # Check call-site lines
+                for (fp, ln) in pkg_callsite_lines.get(import_name, set()):
+                    if ln in file_executed_lines.get(fp, set()):
+                        callsite_line_hit = True
+                        break
+                # Check import lines
+                if not callsite_line_hit:
+                    for (fp, ln) in pkg_import_lines.get(import_name, set()):
+                        if ln in file_executed_lines.get(fp, set()):
+                            import_line_hit = True
+                            break
+                # Fallback: file-level
+                import_in_executed = (
+                    callsite_line_hit
+                    or import_line_hit
+                    or import_name in runtime_imported_packages
+                )
 
             # Strategy 2b: App-side caller from static call chain was executed.
             # e.g. static says home() → flask.render_template_string(); if home()
@@ -1030,13 +1236,21 @@ class DynamicReachabilityAgent(BaseTool):
                 sink_reachable = True
                 import_time_hit = False
             elif import_in_executed:
-                # App code that imports the package ran, but library code itself
-                # is not in coverage.  This is import-time evidence only.
-                # The orchestrator will promote this to full dynamic reachability
-                # ONLY if the package also has taint + route + static evidence.
-                verdict, confidence = "LIKELY", 0.40
-                sink_reachable = False
-                import_time_hit = True
+                if callsite_line_hit:
+                    # Call to pkg executed at a confirmed line → strong indirect signal
+                    verdict, confidence = "LIKELY", 0.80
+                    sink_reachable = True
+                    import_time_hit = False
+                elif import_line_hit:
+                    # Import line itself was executed → pkg loaded at runtime
+                    verdict, confidence = "LIKELY", 0.65
+                    sink_reachable = False
+                    import_time_hit = True
+                else:
+                    # File ran and imports pkg, but which lines ran is unknown
+                    verdict, confidence = "LIKELY", 0.40
+                    sink_reachable = False
+                    import_time_hit = True
             else:
                 # Taint stack evidence
                 verdict, confidence = "CONFIRMED", 0.90
@@ -1272,46 +1486,74 @@ class DynamicReachabilityAgent(BaseTool):
         repo_path: Path,
         service_name: str,
         coverage_dir: str,
-    ) -> None:
+        retries: int = 3,
+        retry_wait: float = 5.0,
+    ) -> bool:
         """Run coverage combine + json inside the running container via docker compose exec.
 
-        This handles the case where coverage data is written to /tmp inside the
-        container (as per .coveragerc data_file) rather than to the /coverage mount.
-        We copy .coverage* files from /tmp to /coverage, combine, and export JSON.
+        Retries up to `retries` times with `retry_wait` seconds between attempts so that
+        in-flight async handlers and lazy coverage flushes have time to settle.
+        Returns True when coverage.json is successfully written with content.
         """
-        # Copy any .coverage files from /tmp (where .coveragerc writes) to /coverage mount
-        copy_cmd = (
-            "sh -c '"
-            "cp /tmp/.coverage* /coverage/ 2>/dev/null; "
-            "cd /coverage && "
-            "coverage combine .coverage* 2>/dev/null; "
-            "coverage json -o /coverage/coverage.json 2>/dev/null; "
-            "echo done"
-            "'"
+        cov_json = Path(coverage_dir) / "coverage.json"
+
+        for attempt in range(1, retries + 1):
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "compose", "-f", compose_path,
+                "exec", "-T", service_name,
+                "sh", "-c",
+                # 1. Copy .coverage* from /tmp (written by COVERAGE_PROCESS_START) to mount
+                # 2. Also copy from /app (some frameworks write relative to workdir)
+                # 3. Combine all parallel coverage files into one
+                # 4. Export as JSON to the shared mount
+                "cp /tmp/.coverage* /coverage/ 2>/dev/null || true; "
+                "cp /app/.coverage* /coverage/ 2>/dev/null || true; "
+                "cd /coverage && "
+                "coverage combine .coverage* 2>/dev/null; "
+                "coverage json -o /coverage/coverage.json; "
+                "echo __done__",
+                cwd=str(repo_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                out = stdout.decode("utf-8", errors="replace")
+                logger.info(
+                    f"[dynamic][compose] Coverage extraction attempt {attempt}/{retries}: "
+                    f"rc={proc.returncode}"
+                )
+                if stderr:
+                    logger.debug(f"[dynamic][compose] stderr: {stderr.decode()[:500]}")
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                logger.warning(
+                    f"[dynamic][compose] Coverage extraction attempt {attempt}/{retries} timed out"
+                )
+                if attempt < retries:
+                    await asyncio.sleep(retry_wait)
+                continue
+
+            # Success check: coverage.json must exist and have real content
+            if cov_json.exists() and cov_json.stat().st_size > 50:
+                logger.info(
+                    f"[dynamic][compose] coverage.json ready "
+                    f"({cov_json.stat().st_size} bytes) after attempt {attempt}"
+                )
+                return True
+
+            if attempt < retries:
+                logger.info(
+                    f"[dynamic][compose] coverage.json not ready yet — "
+                    f"waiting {retry_wait}s before retry {attempt + 1}"
+                )
+                await asyncio.sleep(retry_wait)
+
+        logger.warning(
+            f"[dynamic][compose] Coverage extraction failed after {retries} attempts"
         )
-        proc = await asyncio.create_subprocess_exec(
-            "docker", "compose", "-f", compose_path,
-            "exec", "-T", service_name,
-            "sh", "-c",
-            "cp /tmp/.coverage* /coverage/ 2>/dev/null; "
-            "cd /coverage && "
-            "coverage combine .coverage* 2>/dev/null; "
-            "coverage json -o /coverage/coverage.json 2>/dev/null; "
-            "ls -la /coverage/",
-            cwd=str(repo_path),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-            out = stdout.decode("utf-8", errors="replace")
-            logger.info(f"[dynamic][compose] Coverage extraction: rc={proc.returncode}\n{out}")
-            if stderr:
-                logger.debug(f"[dynamic][compose] Coverage extraction stderr: {stderr.decode()[:500]}")
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            logger.warning("[dynamic][compose] Coverage extraction timed out")
+        return False
 
     async def _combine_coverage_on_host(
         self, coverage_dir: str, repo_path: Path
