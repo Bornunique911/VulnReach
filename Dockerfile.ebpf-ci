@@ -1,0 +1,58 @@
+# CI image for eBPF e2e tests.
+#
+# Based on Debian Bookworm (same base as the main Dockerfile) with bpftrace
+# added.  Must be run with:
+#   --privileged          (CAP_BPF for probe attachment)
+#   --pid=host            (see host-namespace PIDs returned by docker inspect)
+#   -v /var/run/docker.sock:/var/run/docker.sock  (for docker inspect)
+#
+# Modern bpftrace (≥0.17) uses BTF instead of kernel headers, so
+# linux-headers are not required when the host kernel has CONFIG_DEBUG_INFO_BTF=y
+# (the default on GitHub Actions, Ubuntu CI, and most cloud VMs ≥ 5.8).
+#
+# Usage via docker-compose.ebpf-test.yml:
+#   docker compose -f docker-compose.ebpf-test.yml up \
+#     --build --abort-on-container-exit --exit-code-from ebpf-runner
+
+FROM python:3.11-slim
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# ── System dependencies ───────────────────────────────────────────────────────
+# bpftrace: eBPF tracing tool (Debian Bookworm ships 0.17+)
+# docker-ce-cli: needed for `docker inspect` in agent code (DooD)
+# curl + gnupg: required to add the Docker apt repo
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bpftrace \
+    curl \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Docker CLI only (no daemon — uses host socket via DooD)
+RUN curl -fsSL https://download.docker.com/linux/debian/gpg \
+        | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) \
+        signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
+        https://download.docker.com/linux/debian $(lsb_release -cs) stable" \
+        > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Python dependencies ───────────────────────────────────────────────────────
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ── Application code ──────────────────────────────────────────────────────────
+COPY . .
+
+# Ensure the shared work dir exists (matches VULNREACH_WORK_DIR)
+RUN mkdir -p /tmp/vulnreach
+
+# Default: run the full eBPF test suite.
+# Override via `command:` in docker-compose.ebpf-test.yml for targeted runs.
+CMD ["python3", "-m", "pytest", "tests/test_ebpf.py", "-v", "--tb=short"]

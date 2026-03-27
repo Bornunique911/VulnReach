@@ -65,6 +65,10 @@ class StorageRepository(ABC):
     def list_scans(self) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
+    @abstractmethod
+    def delete_scan(self, scan_id: str) -> bool:
+        raise NotImplementedError
+
 
 class PostgresRepository(StorageRepository):
     def __init__(self, dsn: Optional[str] = None) -> None:
@@ -585,6 +589,12 @@ class PostgresRepository(StorageRepository):
                     }
                     for row in rows
                 ]
+
+    def delete_scan(self, scan_id: str) -> bool:
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM scans WHERE id = %s", (scan_id,))
+                return cur.rowcount > 0
 
     # ── User management ──────────────────────────────────────────────
 

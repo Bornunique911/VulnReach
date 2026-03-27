@@ -1,45 +1,60 @@
 scan:
   static_reachability: true
   tools:
-    - git # double check if provided tools are only executed and not all - but git should be used by default if git repostiry is detected
-    - trivy
-    - tainter
-    - python_reachability
-    - route_extractor
-    - metadata
-    - dynamic_reachability
-    # - semgrep  # uncomment to enable Semgrep agent
+    - git                  # auto-injected when repo_url is provided
+    - trivy                # SCA — finds CVEs in installed packages (required)
+    - tainter              # taint analysis — OPTIONAL, skipped gracefully if not installed
+    - python_reachability  # AST call-chain analysis
+    - route_extractor      # HTTP route map (Flask / FastAPI / Django)
+    - metadata             # resolves PyPI → importable name map
+    - dynamic_reachability # Docker-based runtime coverage (requires runtime.enabled=true)
+    # - semgrep            # uncomment to enable Semgrep SAST
+    # - pytest_coverage    # uncomment to run target app's own test suite
+
   runtime:
-    enabled: true          # set to true to enable dynamic reachability
-    timeout: 120           # max seconds to wait for container + schemathesis
-    coverage_wait: 10      # seconds to wait after traffic before collecting coverage
-    container_port: 3000   # port the app runs on inside the container
+    enabled: true          # set to false to skip all Docker-based dynamic analysis
+    timeout: 120           # max seconds for container startup + Schemathesis traffic
+    coverage_wait: 10      # seconds to wait after traffic before flushing coverage
+    container_port: 3000   # port the target app exposes inside its container
     ebpf:
-      enabled: false       # set to true for non-invasive eBPF tracing (Linux only)
+      enabled: false       # experimental — Linux only, requires bpftrace or BCC
       mode: openat         # "openat" (portable) or "usdt" (requires Python+dtrace)
       tracer: bpftrace     # "bpftrace" or "bcc" — must be installed on the host
+
   openapi_generator:
-    enabled: true           # set to true to auto-generate OpenAPI spec via LLM
-    provider: ollama      # "anthropic" | "openai"
-    model: qwen3-coder:480b-cloud
+    enabled: false         # auto-generate OpenAPI spec via LLM when no spec exists
+    provider: none         # "none" | "anthropic" | "openai" | "ollama"
+                           # "none" = disabled even if enabled=true (no vendor lock-in)
+    # provider: anthropic
     # api_key_env: ANTHROPIC_API_KEY
+    # model: claude-sonnet-4-20250514
+    # provider: ollama
+    # model: qwen2.5-coder:7b
+    # ollama_base_url: http://localhost:11434
     max_tokens: 4096
+
   intelligent_dast:
-    enabled: true           # set to true for Claude-steered DAST (SQLi v1)
-    provider: ollama      # "anthropic" | "openai" | "ollama"
-    model: qwen3-coder:480b-cloud
-    base_url: ""             # auto-detect from runtime.container_port if empty
+    enabled: false         # LLM-steered DAST (SQLi / SSRF confirmation)
+    provider: none         # "none" | "anthropic" | "openai" | "ollama"
+                           # "none" = disabled even if enabled=true (no vendor lock-in)
+    # provider: anthropic
+    # api_key_env: ANTHROPIC_API_KEY
+    # model: claude-sonnet-4-20250514
+    # provider: ollama
+    # model: qwen2.5-coder:7b
+    base_url: ""           # override target URL; empty = auto-detect from container_port
     ollama_base_url: "http://localhost:11434"
     max_iter: 5
-    auth_credentials: ""     # optional "user:pass" for target app authentication
+    auth_credentials: ""   # optional "user:pass" for target app authentication
 
 risk:
-  exposure: public
-  data_sensitivity: high
+  exposure: public         # "public" | "internal" | "private" — affects risk score
+  data_sensitivity: high   # "low" | "medium" | "high"
 
 policy:
   block_if: []
-    # - severity: CRITICAL
-    #   verdict: CONFIRMED
-    # - severity: HIGH
-    #   verdict: CONFIRMED  
+  # Uncomment rules to fail CI on confirmed critical findings:
+  # - severity: CRITICAL
+  #   verdict: CONFIRMED
+  # - severity: HIGH
+  #   verdict: CONFIRMED

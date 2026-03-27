@@ -128,14 +128,17 @@ class TainterAgent(BaseAgent):
         }
 
         if proc.returncode != 0:
+            meta["stderr"] = stderr_text[:500]
+            if stdout_text.strip():
+                # rc=1 is tainter's convention for "findings found" — not a real error.
+                logger.debug(
+                    f"[tainter] rc={proc.returncode} with stdout — treating as findings present"
+                )
+                return stdout_text, meta
+            # No stdout: genuine failure
             logger.error(
                 f"[tainter] Scan failed (rc={proc.returncode}): {stderr_text[:500]}"
             )
-            meta["stderr"] = stderr_text[:500]
-            # returncode 1 sometimes just means "findings found" — try to parse anyway
-            if stdout_text.strip():
-                logger.info("[tainter] Non-zero rc but stdout present — attempting parse")
-                return stdout_text, meta
             return None, meta
 
         if stderr_text.strip():
@@ -280,6 +283,17 @@ class TainterAgent(BaseAgent):
             # taint sink and extract all top-level imports. This catches cases
             # where the tainter CLI misclassifies the module (e.g. DRF's
             # rest_framework.response.Response reported as flask.Response).
+            # WARNING: this is heuristic — all imports in the sink file are
+            # added to flow_packages, which can produce false positives when
+            # a sink file imports many packages (e.g. a Django views.py that
+            # imports both requests AND yaml).  A future version will require
+            # an explicit `packages` field in tainter output to suppress this.
+            if repo_path and full_sink_path and not (flow.get("packages") or []):
+                logger.debug(
+                    "[tainter][heuristic] Flow has no explicit `packages` field — "
+                    f"falling back to sink-file import scan for '{Path(full_sink_path).name}'. "
+                    "This may produce false positives."
+                )
             if repo_path and full_sink_path:
                 try:
                     p = Path(full_sink_path)

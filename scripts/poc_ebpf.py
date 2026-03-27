@@ -241,7 +241,7 @@ async def phase_simulate(
         for line in simulated.splitlines():
             line_lower = line.lower()
             for pkg in vuln_packages:
-                import_name = _PYPI_TO_IMPORT.get(pkg, pkg)
+                import_name = _PYPI_TO_IMPORT.get(pkg, pkg).lower()
                 if len(import_name) >= _MIN_PKG_MATCH_LEN and import_name in line_lower:
                     hit_packages.add(pkg)
 

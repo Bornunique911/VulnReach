@@ -39,6 +39,7 @@ class ReachabilityFinding(BaseModel):
     import_time_hit: bool = False  # package loaded at import time but no function called
     function: Optional[str] = None
     files: List[Any] = Field(default_factory=list)
+    line: Optional[int] = None  # line number of the executed callsite / import
 
 
 class SemgrepFinding(BaseModel):

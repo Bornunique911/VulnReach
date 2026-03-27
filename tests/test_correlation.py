@@ -13,14 +13,14 @@ from correlation.engine import (
 # CONFIRMED is never produced here; that is reserved for the dynamic path.
 # ------------------------------------------------------------------
 def test_static_reachability_verdict_rules():
-    # call-chain present → LIKELY
+    # import + call_chain + sink_reachable → CONFIRMED (full static trace to sink)
+    assert reachability_verdict(True, True, True) == "CONFIRMED"
+    # call-chain present but no sink proof → LIKELY
     assert reachability_verdict(True, True, False) == "LIKELY"
     # import only → POSSIBLE
     assert reachability_verdict(True, False, False) == "POSSIBLE"
     # nothing → NOT_OBSERVED
     assert reachability_verdict(False, False, False) == "NOT_OBSERVED"
-    # sink_reachable arg is accepted but ignored for static path
-    assert reachability_verdict(True, True, True) == "LIKELY"
 
 
 # ------------------------------------------------------------------

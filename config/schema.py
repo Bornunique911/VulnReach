@@ -23,6 +23,9 @@ class RuntimeSettings(BaseModel):
     timeout: int = 60
     coverage_wait: int = 10
     container_port: int = 3000
+    # Override the container WORKDIR for coverage path resolution.
+    # Leave empty to auto-detect from the Dockerfile WORKDIR instruction.
+    container_workdir: str = ""
     ebpf: EbpfSettings = EbpfSettings()
 
 
@@ -30,7 +33,10 @@ class OpenAPIGeneratorSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
-    provider: str = "anthropic"
+    # provider: "none" (default) disables LLM calls even when enabled=true.
+    # Set to "anthropic", "openai", or "ollama" to activate.
+    # VulnReach is fully functional without any LLM provider.
+    provider: str = "none"
     model: str = "claude-sonnet-4-20250514"
     api_key_env: str = "ANTHROPIC_API_KEY"
     max_tokens: int = 4096
@@ -40,7 +46,10 @@ class IntelligentDastSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
-    provider: str = "anthropic"  # "anthropic" | "openai" | "ollama"
+    # provider: "none" (default) disables LLM calls even when enabled=true.
+    # Set to "anthropic", "openai", or "ollama" to activate.
+    # VulnReach is fully functional without any LLM provider.
+    provider: str = "none"  # "none" | "anthropic" | "openai" | "ollama"
     model: str = "claude-sonnet-4-20250514"
     api_key_env: str = "ANTHROPIC_API_KEY"
     base_url: str = ""  # override target URL; empty = auto-detect from runtime

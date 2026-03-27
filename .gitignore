@@ -3,6 +3,7 @@ pytest.ini
 TODO-PRIVATE.md
 
 #DIRECTORIES
+.venv/*
 .env
 auditor-prompts/*
 scans/*

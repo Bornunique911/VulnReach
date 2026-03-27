@@ -1,0 +1,79 @@
+# Docker Compose for repeatable eBPF e2e tests in CI.
+#
+# Architecture:
+#   target      — runs labs/python_vuln_app on port 13000 (healthy-check gated)
+#   ebpf-runner — privileged container with bpftrace that:
+#                   1. waits for target to be healthy
+#                   2. runs pytest tests/test_ebpf.py
+#                   3. exits with the test suite exit code
+#
+# The ebpf-runner uses --pid=host so that PIDs returned by
+# `docker inspect --format '{{.State.Pid}} <container_id>'`
+# are directly addressable by bpftrace inside the runner container.
+#
+# Requirements:
+#   • Linux host with kernel ≥ 4.9 (CONFIG_BPF=y)
+#   • BTF-enabled kernel (≥ 5.8, CONFIG_DEBUG_INFO_BTF=y) for headerless bpftrace
+#   • Docker with --privileged support (standard on GitHub Actions, GitLab CI, CircleCI)
+#
+# Usage:
+#   docker compose -f docker-compose.ebpf-test.yml up \
+#     --build --abort-on-container-exit --exit-code-from ebpf-runner
+#
+#   # Non-Linux / no bpftrace: unit + failure-mode tests only (no Docker required):
+#   pytest tests/test_ebpf.py -m "not integration"
+
+services:
+
+  # ── Target: vulnerable Python app ──────────────────────────────────────────
+  target:
+    build:
+      context: labs/python_vuln_app
+      dockerfile: Dockerfile
+    ports:
+      - "13000:3000"
+    healthcheck:
+      # Use Python's stdlib so no extra tool is needed in the slim image
+      test:
+        - "CMD"
+        - "python3"
+        - "-c"
+        - "import urllib.request; urllib.request.urlopen('http://localhost:3000/health', timeout=3)"
+      interval: 5s
+      timeout: 5s
+      retries: 18   # up to 90 s for gunicorn to fully start
+      start_period: 5s
+    restart: "no"
+
+  # ── eBPF test runner ────────────────────────────────────────────────────────
+  ebpf-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.ebpf-ci
+    # CAP_BPF is required to load BPF programs.
+    # --privileged grants all capabilities including CAP_BPF, CAP_PERFMON,
+    # CAP_SYS_PTRACE — the minimal set bpftrace needs.
+    privileged: true
+    # Share the host PID namespace so that the host PID returned by
+    # `docker inspect` is directly visible to bpftrace inside this container.
+    pid: "host"
+    volumes:
+      # DooD: allow `docker inspect` calls in the agent code
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # The target is reachable inside Docker's bridge network at this hostname.
+      # Integration tests use localhost:13000 (mapped port on the Docker host)
+      # so this is informational; override if needed.
+      - EBPF_TARGET_HOST=target
+      - EBPF_TARGET_PORT=3000
+      # Disable Python output buffering so test output appears in real time
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      target:
+        condition: service_healthy
+    command: >
+      python3 -m pytest tests/test_ebpf.py
+        -v
+        --tb=short
+        -p no:cacheprovider
+    restart: "no"

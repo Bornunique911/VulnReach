@@ -3,7 +3,7 @@ from typing import Any, Dict, Set
 
 from core.models import AgentResult, ScanContext
 from agents.runner import AgentRunner
-from correlation.engine import confidence_from_verdict, dynamic_reachability_verdict, reachability_verdict
+from correlation.engine import confidence_from_verdict, reachability_verdict
 from correlation.service import CorrelationService
 from storage.repository import StorageRepository
 
@@ -183,6 +183,10 @@ class Orchestrator:
                 "has_coverage_hit": True,  # all paths above have some coverage evidence
                 "has_static_evidence": has_static,
                 "confidence": confidence,
+                # sink_reachable=True means a call-site line executed — that IS a
+                # call chain. Propagate so classify_reachability() can reach the
+                # DYNAMICALLY_REACHABLE tier (which requires call_chain_exists OR function).
+                "call_chain_exists": bool(dyn_item.get("call_chain_exists") or has_coverage),
             }
 
         # ------------------------------------------------------------------

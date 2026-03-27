@@ -4,6 +4,7 @@ from correlation.engine import (
     apply_policy,
     classify_reachability,
     confidence_from_verdict,
+    dynamic_reachability_verdict,
     priority_from_score,
     risk_score,
 )
@@ -103,14 +104,17 @@ class CorrelationService:
 
                 # ── Map to verdict + confidence ───────────────────────────────
                 if reachability_class == "DYNAMICALLY_REACHABLE":
-                    verdict = "CONFIRMED" if has_taint_flow else "LIKELY"
-                    confidence = dyn.get("confidence", 0.95 if has_taint_flow else 0.75)
+                    # Use the canonical engine function so verdict logic is not duplicated.
+                    verdict = dynamic_reachability_verdict(has_taint_flow, coverage_hit)
+                    base_conf = dyn.get("confidence") or confidence_from_verdict(verdict)
+                    # Compound: independent static evidence alongside dynamic coverage
+                    # raises confidence — each source reduces residual uncertainty.
+                    # Cap at 0.99 (never claim certainty).
+                    confidence = min(0.99, base_conf * 1.10) if sta else base_conf
                     finding_type = "dynamic"
                 elif reachability_class == "STATICALLY_REACHABLE":
                     if call_chain_exists and import_detected:
                         verdict = "LIKELY"
-                    elif import_detected or call_chain_exists:
-                        verdict = "POSSIBLE"
                     else:
                         verdict = "POSSIBLE"
                     confidence = (sta or {}).get("confidence") or confidence_from_verdict(verdict)

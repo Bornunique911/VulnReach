@@ -220,9 +220,13 @@ class DynamicReachabilityAgent(BaseTool):
             )
 
         # Dispatch to eBPF mode when enabled and the tracer is available.
-        # Falls back to coverage mode silently when unavailable.
+        # Falls back to coverage mode when unavailable.
         ebpf_cfg = runtime.ebpf
         if ebpf_cfg.enabled:
+            logger.warning(
+                "[dynamic] eBPF mode is EXPERIMENTAL — Linux only, untested in CI. "
+                "Set runtime.ebpf.enabled=false to use the stable Dockerfile-patch mode."
+            )
             if self._ebpf_available(ebpf_cfg.tracer):
                 logger.info(
                     f"[dynamic] eBPF mode active (tracer={ebpf_cfg.tracer}, mode={ebpf_cfg.mode})"
@@ -356,7 +360,7 @@ class DynamicReachabilityAgent(BaseTool):
         # ------------------------------------------------------------------
         # Step 5 — Correlate static + dynamic (coverage + taint events)
         # ------------------------------------------------------------------
-        findings = self._correlate(coverage_data, context.vulnerabilities, taint_events, static_findings=context.taint_flows, repo_path=repo_path)
+        findings = self._correlate(coverage_data, context.vulnerabilities, taint_events, static_findings=context.taint_flows, repo_path=repo_path, import_map=context.import_map, container_workdir=getattr(context.config.scan.runtime, "container_workdir", ""))
 
         return AgentResult.model_validate({
             "tool_name": self.tool_name,
@@ -449,6 +453,10 @@ class DynamicReachabilityAgent(BaseTool):
         - If CMD is gunicorn/uvicorn → inject sitecustomize + env block.
         - Otherwise → return (None, reason) so the caller can abort cleanly.
 
+        Multi-stage Dockerfiles are handled correctly: only the final stage is
+        patched.  The WORKDIR of the final stage is detected and used in the
+        coverage block so the .coveragerc path is always valid.
+
         When inject_hooks=True, the sitecustomize.py also installs runtime_hooks
         (audit, imports, sinks) and registers an atexit handler to flush taint
         events to /coverage/runtime_events.<pid>.json on container shutdown.
@@ -461,12 +469,32 @@ class DynamicReachabilityAgent(BaseTool):
             return content, "already_patched"
 
         lines = content.splitlines()
+
+        # --- Multi-stage awareness ---
+        # Find the index where the final stage begins (last FROM line).
+        # Only the final stage's CMD and WORKDIR are relevant.
+        final_stage_start = 0
+        for i, line in enumerate(lines):
+            if re.match(r"^\s*FROM\s+", line, re.IGNORECASE):
+                final_stage_start = i
+
+        # Detect WORKDIR from the final stage (default /app for safety)
+        detected_workdir = "/app"
+        for line in lines[final_stage_start:]:
+            m = re.match(r"^\s*WORKDIR\s+(\S+)", line, re.IGNORECASE)
+            if m:
+                detected_workdir = m.group(1).rstrip("/") or detected_workdir
+
+        workdir = detected_workdir
+        logger.debug(f"[dynamic][patch] Final stage WORKDIR detected as '{workdir}'")
+
         patched_lines: List[str] = []
         found_target_cmd = False
 
-        for line in lines:
+        for i, line in enumerate(lines):
             stripped = line.strip()
-            if not stripped.upper().startswith("CMD"):
+            # Only consider CMD lines in the final stage
+            if i < final_stage_start or not stripped.upper().startswith("CMD"):
                 patched_lines.append(line)
                 continue
 
@@ -523,6 +551,7 @@ class DynamicReachabilityAgent(BaseTool):
             sitecustomize_printf = "import coverage\\ncoverage.process_startup()\\n"
             copy_hooks_line = ""
 
+        coveragerc_path = f"{workdir}/.coveragerc"
         coverage_block = (
             "\n# Injected by VulnReach dynamic agent\n"
             + copy_hooks_line
@@ -532,15 +561,16 @@ class DynamicReachabilityAgent(BaseTool):
             "*/site-packages/_*\\n"
             "data_file = /tmp/.coverage\\n"
             "parallel = true\\nsigterm = true\\nconcurrency = multiprocessing\\n'"
-            " > /app/.coveragerc\n"
+            f" > {coveragerc_path}\n"
             "RUN python -c \"import sysconfig; print(sysconfig.get_path('purelib'))\""
             " > /tmp/sp.txt \\\n"
             f" && printf '{sitecustomize_printf}'"
             " > \"$(cat /tmp/sp.txt)/sitecustomize.py\"\n"
-            "ENV COVERAGE_PROCESS_START=/app/.coveragerc\n"
+            f"ENV COVERAGE_PROCESS_START={coveragerc_path}\n"
         )
 
         full = "\n".join(patched_lines)
+        # Insert coverage block before the last CMD in the final stage
         last_cmd_idx = full.rfind("\nCMD ")
         if last_cmd_idx != -1:
             full = full[:last_cmd_idx] + coverage_block + full[last_cmd_idx:]
@@ -975,6 +1005,8 @@ class DynamicReachabilityAgent(BaseTool):
         taint_events: Optional[List[Dict[str, Any]]] = None,
         static_findings: Optional[List[Dict[str, Any]]] = None,
         repo_path: Optional[Path] = None,
+        import_map: Optional[Dict[str, str]] = None,
+        container_workdir: str = "",
     ) -> List[ReachabilityFinding]:
         """
         Cross-reference dynamically executed (file, function) pairs from
@@ -1046,7 +1078,23 @@ class DynamicReachabilityAgent(BaseTool):
         # Common container WORKDIR prefixes to strip when resolving paths against repo_path.
         # Coverage.json from inside a container has paths like /app/api/views.py but the
         # file lives at <repo_path>/api/views.py on the host.
-        _CONTAINER_PREFIXES = ("/app/", "/code/", "/srv/", "/usr/src/app/", "/home/app/")
+        # `container_workdir` from config takes priority; common defaults are appended as fallback.
+        _default_prefixes = ("/app/", "/code/", "/srv/", "/usr/src/app/", "/home/app/")
+        if container_workdir:
+            _wd = container_workdir.rstrip("/") + "/"
+            _CONTAINER_PREFIXES = (_wd,) + tuple(p for p in _default_prefixes if p != _wd)
+        else:
+            _CONTAINER_PREFIXES = _default_prefixes
+
+        # Build a reverse mapping from dist name → import name using the runtime
+        # import_map produced by MetadataAgent.  This covers niche packages that
+        # are missing from the hardcoded _PYPI_TO_IMPORT dict.
+        _dist_to_import: Dict[str, str] = {}
+        if import_map:
+            for imp_name, dist_name in import_map.items():
+                # Prefer the first (shortest) import name seen for each dist
+                if dist_name not in _dist_to_import or len(imp_name) < len(_dist_to_import[dist_name]):
+                    _dist_to_import[dist_name] = imp_name
 
         for file_path in hit_files_full:
             try:
@@ -1151,8 +1199,13 @@ class DynamicReachabilityAgent(BaseTool):
             if not pypi_name:
                 continue
 
-            # Resolve PyPI name → importable name (e.g. pillow → PIL)
-            import_name = _PYPI_TO_IMPORT.get(pypi_name, pypi_name).lower()
+            # Resolve PyPI name → importable name (e.g. pillow → PIL).
+            # Lookup order: hardcoded dict → runtime import_map → pypi name as-is.
+            import_name = (
+                _PYPI_TO_IMPORT.get(pypi_name)
+                or _dist_to_import.get(pypi_name)
+                or pypi_name
+            ).lower()
 
             cves = vuln.get("cve_id", [])
             if isinstance(cves, str):
@@ -1185,17 +1238,20 @@ class DynamicReachabilityAgent(BaseTool):
             import_in_executed = False
             import_line_hit = False    # import line itself executed
             callsite_line_hit = False  # call-site line executed
+            evidence_line: Optional[int] = None  # best line number for the finding
             if not dynamically_hit:
                 # Check call-site lines
                 for (fp, ln) in pkg_callsite_lines.get(import_name, set()):
                     if ln in file_executed_lines.get(fp, set()):
                         callsite_line_hit = True
+                        evidence_line = ln
                         break
                 # Check import lines
                 if not callsite_line_hit:
                     for (fp, ln) in pkg_import_lines.get(import_name, set()):
                         if ln in file_executed_lines.get(fp, set()):
                             import_line_hit = True
+                            evidence_line = ln
                             break
                 # Fallback: file-level
                 import_in_executed = (
@@ -1271,6 +1327,7 @@ class DynamicReachabilityAgent(BaseTool):
                         import_time_hit=import_time_hit,
                         function=None,
                         files=list(hit_files)[:5],
+                        line=evidence_line,
                     )
                 )
 
@@ -1320,9 +1377,12 @@ class DynamicReachabilityAgent(BaseTool):
                 # Patch Dockerfile to inject coverage
                 patched_content, skip_reason = self._patch_dockerfile(Path(dockerfile_path))
                 if patched_content:
-                    patched_dockerfile_path = str(repo_path / ".vulnreach_Dockerfile")
+                    # Write to the coverage tempdir, not repo_path, so we never
+                    # mutate the user's source tree. Docker Compose accepts an
+                    # absolute path for `build.dockerfile`.
+                    patched_dockerfile_path = str(Path(coverage_dir) / "Dockerfile.patched")
                     Path(patched_dockerfile_path).write_text(patched_content, encoding="utf-8")
-                    logger.info("[dynamic][compose] Wrote patched Dockerfile for coverage")
+                    logger.info("[dynamic][compose] Wrote patched Dockerfile to tempdir (not repo)")
                 else:
                     logger.warning(f"[dynamic][compose] Could not patch Dockerfile: {skip_reason}")
 
@@ -1466,7 +1526,7 @@ class DynamicReachabilityAgent(BaseTool):
             )
 
         # Step 8 — Correlate
-        findings = self._correlate(coverage_data, context.vulnerabilities, taint_events, static_findings=context.taint_flows, repo_path=repo_path)
+        findings = self._correlate(coverage_data, context.vulnerabilities, taint_events, static_findings=context.taint_flows, repo_path=repo_path, import_map=context.import_map, container_workdir=getattr(context.config.scan.runtime, "container_workdir", ""))
         return AgentResult.model_validate({
             "tool_name": self.tool_name,
             "findings": [f.model_dump() for f in findings],
@@ -1760,6 +1820,16 @@ class DynamicReachabilityAgent(BaseTool):
             Intercepts Python's function__entry USDT probe, emitting the
             filename and function name for every Python call.
         """
+        if mode == "line":
+            # USDT python:line — fires on every executed Python line.
+            # arg0 = filename (char*), arg1 = funcname (char*), arg2 = lineno (int).
+            # (int64) cast required: without it some bpftrace versions print hex.
+            return (
+                f"usdt:/proc/{pid}/exe:python:line\n"
+                "{{\n"
+                '  printf("line:%s:%d\\n", str(arg0), (int64)arg2);\n'
+                "}}\n"
+            )
         if mode == "usdt":
             return (
                 f"usdt:/proc/{pid}/exe:python:function__entry\n"
@@ -1821,7 +1891,7 @@ class DynamicReachabilityAgent(BaseTool):
         for line in output.splitlines():
             line_lower = line.lower()
             for pkg in vuln_packages:
-                import_name = _PYPI_TO_IMPORT.get(pkg.lower(), pkg.lower())
+                import_name = _PYPI_TO_IMPORT.get(pkg.lower(), pkg.lower()).lower()
                 if len(import_name) >= _MIN_PKG_MATCH_LEN and import_name in line_lower:
                     hit_packages.add(pkg.lower())
 

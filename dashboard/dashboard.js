@@ -167,10 +167,117 @@ function groupByRepo(scanList) {
   return map;
 }
 
+// ─── Config page ───────────────────────────────────────────────────────────
+const _DEFAULT_CONFIG_YAML = `scan:
+  static_reachability: true
+  tools:
+    - git                  # auto-injected when repo_url is provided
+    - trivy                # SCA — finds CVEs in installed packages (required)
+    - tainter              # taint analysis — OPTIONAL, skipped gracefully if not installed
+    - python_reachability  # AST call-chain analysis
+    - route_extractor      # HTTP route map (Flask / FastAPI / Django)
+    - metadata             # resolves PyPI → importable name map
+    - dynamic_reachability # Docker-based runtime coverage (requires runtime.enabled=true)
+    # - semgrep            # uncomment to enable Semgrep SAST
+    # - pytest_coverage    # uncomment to run target app's own test suite
+
+  runtime:
+    enabled: true          # set to false to skip all Docker-based dynamic analysis
+    timeout: 120           # max seconds for container startup + Schemathesis traffic
+    coverage_wait: 10      # seconds to wait after traffic before flushing coverage
+    container_port: 3000   # port the target app exposes inside its container
+    ebpf:
+      enabled: false       # experimental — Linux only, requires bpftrace or BCC
+      mode: openat         # "openat" (portable) or "usdt" (requires Python+dtrace)
+      tracer: bpftrace     # "bpftrace" or "bcc" — must be installed on the host
+
+  openapi_generator:
+    enabled: false         # auto-generate OpenAPI spec via LLM when no spec exists
+    provider: none         # "none" | "anthropic" | "openai" | "ollama"
+    # provider: anthropic
+    # api_key_env: ANTHROPIC_API_KEY
+    # model: claude-sonnet-4-20250514
+    # provider: ollama
+    # model: qwen2.5-coder:7b
+    # ollama_base_url: http://localhost:11434
+    max_tokens: 4096
+
+  intelligent_dast:
+    enabled: false         # LLM-steered DAST (SQLi / SSRF confirmation)
+    provider: none         # "none" | "anthropic" | "openai" | "ollama"
+    # provider: anthropic
+    # api_key_env: ANTHROPIC_API_KEY
+    # model: claude-sonnet-4-20250514
+    # provider: ollama
+    # model: qwen2.5-coder:7b
+    base_url: ""           # override target URL; empty = auto-detect from container_port
+    ollama_base_url: "http://localhost:11434"
+    max_iter: 5
+    auth_credentials: ""   # optional "user:pass" for target app authentication
+
+risk:
+  exposure: public         # "public" | "internal" | "private" — affects risk score
+  data_sensitivity: high   # "low" | "medium" | "high"
+
+policy:
+  block_if: []
+  # Uncomment rules to fail CI on confirmed critical findings:
+  # - severity: CRITICAL
+  #   verdict: CONFIRMED
+  # - severity: HIGH
+  #   verdict: CONFIRMED`;
+
+function _hlYaml(raw) {
+  return raw
+    .split('\n')
+    .map(line => {
+      // escape HTML first
+      let s = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      // full-line comments (possibly indented)
+      if (/^\s*#/.test(s)) return `<span style="color:var(--text-mute)">${s}</span>`;
+      // inline comment — split at first unquoted #
+      const ci = s.search(/ #/);
+      let code = s, comment = '';
+      if (ci !== -1) { code = s.slice(0, ci); comment = `<span style="color:var(--text-mute)">${s.slice(ci)}</span>`; }
+      // key: value
+      code = code.replace(/^(\s*)([\w_-]+)(:)(\s*)(.*)$/, (_, indent, key, colon, sp, val) => {
+        const kHtml = `<span style="color:var(--green)">${key}</span>${colon}`;
+        if (!val.trim()) return indent + kHtml;
+        const vHtml = /^(true|false)$/.test(val.trim())
+          ? `<span style="color:var(--blue)">${val}</span>`
+          : /^\d+$/.test(val.trim())
+            ? `<span style="color:var(--amber)">${val}</span>`
+            : `<span style="color:var(--text)">${val}</span>`;
+        return indent + kHtml + sp + vHtml;
+      });
+      // list items  - value
+      code = code.replace(/^(\s*-\s)(.+)$/, (_, prefix, val) =>
+        `<span style="color:var(--text-dim)">${prefix}</span><span style="color:var(--text)">${val}</span>`
+      );
+      return code + comment;
+    })
+    .join('\n');
+}
+
+function buildConfigPage() {
+  const el = document.getElementById('config-page-body');
+  if (!el) return;
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
+      <div style="font-size:0.85rem;color:var(--text-dim)">
+        Reference copy of <code style="color:var(--green);font-size:0.8rem">config/scan.sample.yml</code>.
+        Pass a path to your own config file when launching a scan.
+      </div>
+      <button class="action-btn" onclick="navigator.clipboard.writeText(_DEFAULT_CONFIG_YAML).then(()=>toast('Copied','success'))">Copy</button>
+    </div>
+    <pre style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:1.25rem;font-family:var(--mono);font-size:0.76rem;line-height:1.7;overflow-x:auto;margin:0">${_hlYaml(_DEFAULT_CONFIG_YAML)}</pre>`;
+}
+
 // ─── Init ──────────────────────────────────────────────────────────────────
 (async () => {
   buildToolChips();
   buildToolsPage();
+  buildConfigPage();
   // Check if server restarted since last session
   if (isLoggedIn()) {
     await checkBootId();
@@ -183,7 +290,7 @@ function groupByRepo(scanList) {
 })();
 
 // ─── Navigation ────────────────────────────────────────────────────────────
-const PAGES = ['scans','repo','new','tools','api','findings','settings'];
+const PAGES = ['scans','repo','new','tools','api','config','findings','settings'];
 
 function setPage(id) {
   PAGES.forEach(p => {
@@ -430,6 +537,11 @@ async function loadScans() {
     updateStats();
     document.getElementById('api-status').textContent = 'API offline';
   }
+  // Re-render repo drilldown if it is currently visible
+  const repoPage = document.getElementById('page-repo');
+  if (repoPage && repoPage.style.display !== 'none' && currentRepoName) {
+    openRepoPage(encodeURIComponent(currentRepoName));
+  }
 }
 
 
@@ -473,6 +585,53 @@ function renderScans() {
   }).join('');
 }
 
+// ─── Scan actions (cancel / delete) ───────────────────────────────────────
+
+let _openMenuScanId = null;
+
+function toggleScanMenu(scanId, event) {
+  event.stopPropagation();
+  const next = _openMenuScanId === scanId ? null : scanId;
+  _closeAllMenus();
+  if (next) {
+    _openMenuScanId = next;
+    const el = document.getElementById(`scan-menu-${scanId}`);
+    if (el) el.classList.add('open');
+  }
+}
+
+function _closeAllMenus() {
+  document.querySelectorAll('.scan-menu-dropdown.open').forEach(el => el.classList.remove('open'));
+  _openMenuScanId = null;
+}
+
+document.addEventListener('click', _closeAllMenus);
+
+async function cancelScan(scanId, event) {
+  event.stopPropagation();
+  _closeAllMenus();
+  try {
+    await apiFetch(`/scan/${scanId}/cancel`, { method: 'POST' });
+    await loadScans();
+  } catch (e) {
+    alert('Cancel failed: ' + (e.message || e));
+  }
+}
+
+async function deleteScan(scanId, event) {
+  event.stopPropagation();
+  _closeAllMenus();
+  try {
+    await apiFetch(`/scan/${scanId}`, { method: 'DELETE' });
+    await loadScans();
+    // If the repo has no remaining scans, go back to repo list
+    const groups = groupByRepo(scans);
+    if (!groups[currentRepoName]?.length) setPage('scans');
+  } catch (e) {
+    alert('Delete failed: ' + (e.message || e));
+  }
+}
+
 // ─── Repo drilldown ───────────────────────────────────────────────────────
 function openRepoPage(encodedName) {
   currentRepoName = decodeURIComponent(encodedName);
@@ -487,15 +646,27 @@ function openRepoPage(encodedName) {
   if (!repoScans.length) {
     body.innerHTML = `<div class="empty-state"><div class="empty-text">No scans</div></div>`;
   } else {
-    body.innerHTML = repoScans.map(s => `
+    body.innerHTML = repoScans.map(s => {
+      const running = s.status === 'running' || s.status === 'started';
+      return `
       <div class="table-row" onclick="openPanel('${s.scan_id}')">
         <div class="scan-id">${s.scan_id}</div>
         <div><span class="badge-status ${s.status}"><span class="s-dot"></span>${s.status}</span></div>
         <div class="ts">${fmtDate(s.started_at)}</div>
         <div>${pkgSummaryHtml(s.pkg_count, s.sev_breakdown, s.status)}</div>
         <div class="tools-pills">${(s.tools||[]).slice(0,3).map(t=>`<span class="pill">${t}</span>`).join('')}${(s.tools||[]).length>3?`<span class="pill">+${s.tools.length-3}</span>`:''}</div>
-        <div><button class="action-btn" onclick="event.stopPropagation();openPanel('${s.scan_id}')">View →</button></div>
-      </div>`).join('');
+        <div style="display:flex;align-items:center;gap:0.4rem">
+          <button class="action-btn" onclick="event.stopPropagation();openPanel('${s.scan_id}')">View →</button>
+          <div class="scan-menu-wrap">
+            <button class="scan-menu-btn" title="More actions" onclick="toggleScanMenu('${s.scan_id}', event)">⋮</button>
+            <div class="scan-menu-dropdown" id="scan-menu-${s.scan_id}">
+              <button class="scan-menu-item${running ? '' : ' disabled'}" onclick="${running ? `cancelScan('${s.scan_id}', event)` : 'event.stopPropagation()'}" ${running ? '' : 'disabled'}>Cancel scan</button>
+              <button class="scan-menu-item danger" onclick="deleteScan('${s.scan_id}', event)">Delete scan</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
   }
   setPage('repo');
 }
@@ -1058,11 +1229,7 @@ async function copyRawJson(btn) {
 
 // ─── Auto refresh ──────────────────────────────────────────────────────────
 function startAutoRefresh() {
-  autoRefreshInterval = setInterval(() => {
-    if (scans.some(s => s.status === 'running' || s.status === 'pending' || s.status === 'started')) {
-      loadScans();
-    }
-  }, 8000);
+  autoRefreshInterval = setInterval(loadScans, 5000);
 }
 
 // ─── Toast ─────────────────────────────────────────────────────────────────
