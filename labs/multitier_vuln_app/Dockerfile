@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir --use-deprecated=legacy-resolver -r requirements.
  && pip install --no-cache-dir "setuptools>=68" "coverage>=7.4.0" gunicorn
 
 # Write .coveragerc — same format as python_vuln_app for VulnReach compatibility
-RUN printf '[run]\nsource = .\nomit = */migrations/*,manage.py\ndata_file = /tmp/.coverage\nparallel = true\nconcurrency = multiprocessing\n\n[json]\noutput = /tmp/coverage.json\n' > /app/.coveragerc
+RUN printf '[run]\nomit = */migrations/*,manage.py,*/pip/*,*/setuptools/*,*/pkg_resources/*,*/coverage/*,*/distutils/*\ndata_file = /tmp/.coverage\nparallel = true\nconcurrency = multiprocessing\n\n[json]\noutput = /tmp/coverage.json\n' > /app/.coveragerc
 
 # Inject sitecustomize.py so every gunicorn worker auto-starts coverage
 RUN python -c "import sysconfig; print(sysconfig.get_path('purelib'))" > /tmp/sp.txt \

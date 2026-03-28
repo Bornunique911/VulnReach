@@ -259,7 +259,8 @@ class DynamicReachabilityAgent(BaseTool):
                 )
                 return await self._run_ebpf_mode(context, repo_path, runtime, preflight)
             logger.warning(
-                f"[dynamic] eBPF requested but {ebpf_cfg.tracer} unavailable — "
+                f"[dynamic] eBPF probe check failed ({ebpf_cfg.tracer} installed "
+                "but required kernel tracepoints unavailable — see above) — "
                 "falling back to Dockerfile-patch coverage mode"
             )
 
