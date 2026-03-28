@@ -49,6 +49,18 @@ try:
 except ImportError:
     aiohttp = None
 
+try:
+    from agents.ebpf.compose_injector import (
+        detect_primary_service as _ebpf_detect_service,
+        inject_sidecar as _ebpf_inject_sidecar,
+        get_compose_up_command as _ebpf_compose_up_cmd,
+        get_compose_down_command as _ebpf_compose_down_cmd,
+    )
+    from agents.ebpf.coverage_normaliser import to_coverage_py_format as _ebpf_to_coverage_py
+    _EBPF_SIDECAR_AVAILABLE = True
+except ImportError:
+    _EBPF_SIDECAR_AVAILABLE = False
+
 from core.agent import BaseTool
 from core.models import AgentResult, ReachabilityFinding, ScanContext
 
@@ -227,6 +239,19 @@ class DynamicReachabilityAgent(BaseTool):
                 "[dynamic] eBPF mode is EXPERIMENTAL — Linux only, untested in CI. "
                 "Set runtime.ebpf.enabled=false to use the stable Dockerfile-patch mode."
             )
+            # Kernel version advisory — logged once per run, never blocks
+            if ebpf_cfg.kernel_check:
+                if not self._kernel_version_ok(4, 9):
+                    logger.warning(
+                        "[dynamic][ebpf] Kernel < 4.9 detected — uprobes unavailable. "
+                        "eBPF tracing will likely fail entirely."
+                    )
+                elif not self._kernel_version_ok(5, 2):
+                    logger.warning(
+                        "[dynamic][ebpf] Kernel < 5.2 detected — BTF may be unavailable. "
+                        "bpftrace may need --no-btf. Upgrading to 5.2+ is recommended."
+                    )
+
             if self._ebpf_available(ebpf_cfg.tracer):
                 logger.info(
                     f"[dynamic] eBPF mode active (tracer={ebpf_cfg.tracer}, mode={ebpf_cfg.mode})"
@@ -1362,6 +1387,21 @@ class DynamicReachabilityAgent(BaseTool):
         coverage_wait = runtime.coverage_wait
         container_port = runtime.container_port
 
+        # eBPF sidecar dispatch — non-invasive path (no Dockerfile patching).
+        # Only activates when: ebpf.enabled AND ebpf.sidecar_mode AND modules available.
+        ebpf_cfg = runtime.ebpf
+        if (
+            ebpf_cfg.enabled
+            and ebpf_cfg.sidecar_mode
+            and _EBPF_SIDECAR_AVAILABLE
+            and self._ebpf_available(ebpf_cfg.tracer)
+        ):
+            logger.info(
+                "[dynamic][compose] eBPF sidecar mode active — "
+                "injecting compose override (no Dockerfile patching)"
+            )
+            return await self._run_ebpf_sidecar_mode(context, repo_path, runtime, preflight)
+
         coverage_dir = tempfile.mkdtemp(prefix="vulnreach_cov_", dir=_WORK_BASE)
         patched_dockerfile_path: Optional[str] = None
 
@@ -1775,6 +1815,25 @@ class DynamicReachabilityAgent(BaseTool):
     # eBPF non-invasive tracing (alternative to Dockerfile patching)
     # ------------------------------------------------------------------
 
+    def _kernel_version_ok(self, min_major: int, min_minor: int) -> bool:
+        """Return True if the host kernel is at least min_major.min_minor.
+
+        Reads /proc/version and parses the version string.
+        Fails open (returns True) on any parse error so scans are never
+        blocked by a version detection failure.
+        """
+        try:
+            version_str = Path("/proc/version").read_text(encoding="utf-8")
+            # Format: "Linux version 5.15.0-91-generic ..."
+            import re as _re
+            m = _re.search(r"Linux version (\d+)\.(\d+)", version_str)
+            if m:
+                major, minor = int(m.group(1)), int(m.group(2))
+                return (major, minor) >= (min_major, min_minor)
+        except Exception:  # noqa: BLE001
+            pass
+        return True  # fail open
+
     def _ebpf_available(self, tracer: str = "bpftrace") -> bool:
         """Return True if eBPF tracing can be attempted on this host.
 
@@ -2066,6 +2125,201 @@ class DynamicReachabilityAgent(BaseTool):
                 },
             },
         })
+
+    # ------------------------------------------------------------------
+    # eBPF sidecar mode (compose-override, non-invasive)
+    # ------------------------------------------------------------------
+
+    async def _run_ebpf_sidecar_mode(
+        self,
+        context: ScanContext,
+        repo_path: Path,
+        runtime: Any,
+        preflight: Dict[str, Any],
+    ) -> AgentResult:
+        """Run eBPF coverage via a compose-override sidecar container.
+
+        The user's docker-compose.yml is never modified.  A companion
+        override file is generated in the VulnReach work directory and passed
+        to ``docker compose -f original -f override up``.
+
+        The sidecar container (vulnreach-ebpf-sidecar) shares the target's
+        PID namespace, runs bpftrace against the detected runtime, and writes
+        /coverage/ebpf_coverage.json to a shared volume.  VulnReach reads
+        that file after compose exits and feeds it through the existing
+        coverage correlator.
+        """
+        ebpf_cfg = runtime.ebpf
+        compose_path = Path(preflight["compose_path"])
+        timeout = (runtime.timeout or self.default_timeout) * 2  # compose needs more time
+
+        # Work directory for this run (under the bind-mounted VULNREACH_WORK_DIR
+        # so the host Docker daemon can resolve volume paths).
+        scan_id = getattr(context, "scan_id", None) or "run"
+        output_dir = Path(_WORK_BASE) / f"vulnreach-ebpf-{scan_id}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            # --- Detect primary service and generate override ---
+            try:
+                target_service = _ebpf_detect_service(compose_path)
+                logger.info("[dynamic][ebpf-sidecar] Target service: %s", target_service)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[dynamic][ebpf-sidecar] Service detection failed: %s", exc)
+                target_service = "app"  # best-effort default
+
+            # Propagate language hint and traffic wait into the sidecar env
+            # by passing them through the override file environment block.
+            # inject_sidecar() uses defaults; we write the override then patch it.
+            override_path = _ebpf_inject_sidecar(
+                compose_path,
+                target_service,
+                output_dir,
+            )
+
+            # Patch LANGUAGE and TRAFFIC_WAIT into the generated override
+            if ebpf_cfg.language != "auto" or runtime.coverage_wait != 10:
+                raw = override_path.read_text(encoding="utf-8")
+                raw = raw.replace(
+                    "LANGUAGE=auto",
+                    f"LANGUAGE={ebpf_cfg.language}",
+                )
+                raw = raw.replace(
+                    "TRAFFIC_WAIT=30",
+                    f"TRAFFIC_WAIT={runtime.coverage_wait}",
+                )
+                override_path.write_text(raw, encoding="utf-8")
+
+            logger.info(
+                "[dynamic][ebpf-sidecar] Override: %s", override_path
+            )
+
+            # --- Run compose stack ---
+            cmd = _ebpf_compose_up_cmd(compose_path, override_path)
+            logger.info("[dynamic][ebpf-sidecar] Running: %s", " ".join(cmd))
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=float(timeout)
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                logger.error("[dynamic][ebpf-sidecar] Compose timed out after %ds", timeout)
+                return AgentResult(
+                    tool_name=self.tool_name,
+                    findings=[],
+                    metadata={
+                        "status": "failed",
+                        "step": "ebpf_sidecar_timeout",
+                        "container_started": {"status": "unknown", "id": "na"},
+                        "timeout_seconds": timeout,
+                    },
+                )
+
+            stderr_text = stderr.decode("utf-8", errors="replace")
+            if proc.returncode not in (0, 1):
+                # returncode 1 is acceptable: sidecar exited 0 but another
+                # service exited 1 (e.g. the target failed after coverage).
+                # We still try to read the coverage file.
+                logger.warning(
+                    "[dynamic][ebpf-sidecar] compose exited %d — stderr: %s",
+                    proc.returncode,
+                    stderr_text[-1000:],
+                )
+
+            # --- Read coverage output ---
+            ebpf_json_path = output_dir / "coverage" / "ebpf_coverage.json"
+            if not ebpf_json_path.exists():
+                return AgentResult(
+                    tool_name=self.tool_name,
+                    findings=[],
+                    metadata={
+                        "status": "failed",
+                        "step": "ebpf_sidecar_no_output",
+                        "container_started": {"status": "yes", "id": "na"},
+                        "compose_exit_code": proc.returncode,
+                        "ebpf_stderr": stderr_text[-2000:],
+                    },
+                )
+
+            import json as _json
+            normalised = _json.loads(ebpf_json_path.read_text(encoding="utf-8"))
+
+            # Graceful skip — sidecar found no viable probe
+            if normalised.get("skip"):
+                logger.warning(
+                    "[dynamic][ebpf-sidecar] Sidecar skipped: %s",
+                    normalised.get("skip_reason", "unknown"),
+                )
+                return AgentResult(
+                    tool_name=self.tool_name,
+                    findings=[],
+                    metadata={
+                        "status": "skipped",
+                        "step": "ebpf_sidecar_no_probe",
+                        "skip_reason": normalised.get("skip_reason"),
+                        "runtime": normalised.get("runtime"),
+                        "container_started": {"status": "yes", "id": "na"},
+                    },
+                )
+
+            # --- Convert and correlate ---
+            coverage_data = _ebpf_to_coverage_py(normalised)
+            file_count = len(coverage_data.get("files", {}))
+            logger.info(
+                "[dynamic][ebpf-sidecar] Coverage: %d files from %s runtime",
+                file_count, normalised.get("runtime", "unknown"),
+            )
+
+            findings = self._correlate(
+                coverage_data,
+                context.vulnerabilities,
+                taint_events=[],
+                static_findings=context.taint_flows,
+                repo_path=repo_path,
+                import_map=context.import_map,
+                container_workdir=getattr(
+                    context.config.scan.runtime, "container_workdir", ""
+                ),
+            )
+
+            return AgentResult.model_validate({
+                "tool_name": self.tool_name,
+                "findings": [f.model_dump() for f in findings],
+                "metadata": {
+                    "status": "ok",
+                    "mode": "ebpf_sidecar",
+                    "finding_count": len(findings),
+                    "container_started": {"status": "yes", "id": "na"},
+                    "ebpf": {
+                        "runtime": normalised.get("runtime"),
+                        "file_count": file_count,
+                        "target_service": target_service,
+                        "language_hint": ebpf_cfg.language,
+                    },
+                },
+            })
+
+        finally:
+            # Always tear down the compose stack and clean up work dir
+            down_cmd = _ebpf_compose_down_cmd(compose_path, override_path)
+            try:
+                down_proc = await asyncio.create_subprocess_exec(
+                    *down_cmd,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await asyncio.wait_for(down_proc.communicate(), timeout=30.0)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[dynamic][ebpf-sidecar] compose down failed (ignored): %s", exc)
+
+            shutil.rmtree(output_dir, ignore_errors=True)
 
     def _correlate_from_ebpf(
         self,
