@@ -76,7 +76,6 @@ sortedcontainers==2.4.0
 sse-starlette==3.3.2
 starlette==0.52.1
 starlette-testclient==0.4.1
--e git+https://github.com/ihrishikesh0896/tainter.git@bbb7bd0a5cf8cb54162a367347ede9aa9759aed9#egg=tainter
 tenacity==9.1.4
 tqdm==4.67.3
 types-requests==2.32.4.20260107

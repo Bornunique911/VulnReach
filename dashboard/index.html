@@ -306,6 +306,42 @@
         <div class="scan-form-card" id="config-page-body"></div>
       </div>
 
+      <!-- Page: Settings -->
+      <div id="page-settings" style="display:none">
+        <div class="page-header">
+          <div>
+            <div class="page-title">Settings</div>
+            <div class="page-subtitle">Sample scan config — copy and drop a <code style="font-size:0.75rem">vulnreach.yaml</code> into your repo</div>
+          </div>
+          <div style="display:flex;gap:0.5rem">
+            <button class="btn-secondary" onclick="copySettingsYaml()"><i class="fas fa-copy" style="margin-right:0.4rem"></i>Copy YAML</button>
+            <button class="btn-secondary" onclick="downloadSettingsYaml()"><i class="fas fa-download" style="margin-right:0.4rem"></i>Download</button>
+          </div>
+        </div>
+
+        <!-- Section filter tabs -->
+        <div style="display:flex;gap:0.4rem;margin-bottom:1.25rem;flex-wrap:wrap">
+          <button class="settings-filter active" onclick="filterSettingsSection('all',this)">All</button>
+          <button class="settings-filter" onclick="filterSettingsSection('scan',this)">Scan</button>
+          <button class="settings-filter" onclick="filterSettingsSection('runtime',this)">Runtime</button>
+          <button class="settings-filter" onclick="filterSettingsSection('ebpf',this)">eBPF</button>
+          <button class="settings-filter" onclick="filterSettingsSection('llm',this)">LLM</button>
+          <button class="settings-filter" onclick="filterSettingsSection('policy',this)">Risk &amp; Policy</button>
+        </div>
+
+        <!-- Info cards per section -->
+        <div id="settings-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0.75rem;margin-bottom:1.5rem"></div>
+
+        <!-- YAML viewer -->
+        <div class="scan-form-card" style="padding:0">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:0.9rem 1.25rem;border-bottom:1px solid var(--border)">
+            <span style="font-size:0.72rem;color:var(--text-mute);font-family:var(--mono)">vulnreach.yaml</span>
+            <span style="font-size:0.7rem;color:var(--text-dim)">Paste into your repo root — all sections are optional</span>
+          </div>
+          <pre id="settings-yaml-pre" style="background:transparent;padding:1.25rem;font-family:var(--mono);font-size:0.76rem;line-height:1.75;overflow-x:auto;margin:0;white-space:pre"></pre>
+        </div>
+      </div>
+
       <!-- Page: Findings -->
       <div id="page-findings" style="display:none">
         <div class="page-header">

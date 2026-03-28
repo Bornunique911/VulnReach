@@ -1473,3 +1473,43 @@ body::after {
   .topbar { padding: 0 0.75rem; }
   .stat-grid { grid-template-columns: 1fr; }
 }
+
+/* ─── Settings page ──────────────────────────────────────────────────────── */
+.settings-filter {
+  padding: 0.3rem 0.85rem;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.settings-filter:hover { border-color: var(--border-hi); color: var(--text); }
+.settings-filter.active { border-color: var(--green); color: var(--green); background: var(--green-dim); }
+
+.settings-info-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  background: var(--surface);
+}
+.settings-info-card .sic-tag {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 0.4rem;
+}
+.settings-info-card .sic-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 0.35rem;
+  font-family: var(--sans);
+}
+.settings-info-card .sic-desc {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  line-height: 1.6;
+}

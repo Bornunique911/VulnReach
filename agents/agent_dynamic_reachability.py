@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -1837,18 +1838,46 @@ class DynamicReachabilityAgent(BaseTool):
     def _ebpf_available(self, tracer: str = "bpftrace") -> bool:
         """Return True if eBPF tracing can be attempted on this host.
 
-        Requires Linux and the specified tracer binary in PATH.
-        bpftrace needs kernel ≥ 4.9 with BPF enabled; we rely on the binary
-        being present as a proxy for a working eBPF environment.
+        Checks:
+          1. Must be Linux (Docker Desktop macOS runs LinuxKit but syscall
+             tracepoints are not exposed there).
+          2. tracer binary must be in PATH.
+          3. The syscall tracepoint required for openat mode must exist —
+             Docker Desktop's LinuxKit kernel only exposes hardware perf events,
+             not syscall/kprobe/uprobe tracepoints.  A quick dry-run probe
+             detects this before we waste a scan attempt.
         """
         import platform
         if platform.system() != "Linux":
             logger.info("[dynamic][ebpf] Not Linux — eBPF unavailable")
             return False
-        available = shutil.which(tracer) is not None
-        if not available:
+        if shutil.which(tracer) is None:
             logger.info(f"[dynamic][ebpf] {tracer} not found in PATH")
-        return available
+            return False
+
+        # Probe check: verify the openat tracepoint actually exists.
+        # On Docker Desktop (LinuxKit), only hardware: perf events are available.
+        try:
+            result = subprocess.run(
+                [tracer, "-e",
+                 "tracepoint:syscalls:sys_enter_openat { exit(); }"],
+                capture_output=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                err = result.stderr.decode("utf-8", errors="replace").strip()
+                logger.warning(
+                    "[dynamic][ebpf] syscall tracepoints unavailable "
+                    "(likely Docker Desktop / LinuxKit kernel) — "
+                    "falling back to Dockerfile-patch coverage mode. "
+                    "bpftrace error: %s", err
+                )
+                return False
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[dynamic][ebpf] probe check failed: %s — skipping eBPF", exc)
+            return False
+
+        return True
 
     async def _get_container_pid(self, container_id: str) -> Optional[int]:
         """Return the host-namespace PID of the container's init process."""
@@ -1896,12 +1925,24 @@ class DynamicReachabilityAgent(BaseTool):
                 '  printf("func:%s:%s\\n", str(arg0), str(arg1));\n'
                 "}}\n"
             )
-        # openat — trace openat syscalls in the container's PID namespace
+        # openat — trace openat syscalls for the entire container process tree.
+        # We walk up from each syscall's task to find whether any ancestor has
+        # the same host-namespace PID as the container's init process.  This
+        # catches gunicorn/uWSGI worker forks and any sub-processes spawned by
+        # the app, not just the single init PID.
         return (
             "tracepoint:syscalls:sys_enter_openat\n"
-            f"/pid == {pid}/\n"
             "{{\n"
-            '  printf("open:%s\\n", str(args->filename));\n'
+            f"  $target = (uint64){pid};\n"
+            "  $t = curtask;\n"
+            "  $found = (uint8)0;\n"
+            "  unroll(10) {\n"
+            "    if ($t->tgid == $target) { $found = 1; }\n"
+            "    $t = $t->real_parent;\n"
+            "  }\n"
+            "  if ($found) {\n"
+            '    printf("open:%s\\n", str(args->filename));\n'
+            "  }\n"
             "}}\n"
         )
 
@@ -1917,7 +1958,7 @@ class DynamicReachabilityAgent(BaseTool):
             proc = await asyncio.create_subprocess_exec(
                 tracer, str(script_path),
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,  # capture stderr so startup errors are logged
             )
             logger.info(
                 f"[dynamic][ebpf] Tracer started (pid={pid}, mode={mode}, tracer={tracer})"
@@ -1936,13 +1977,19 @@ class DynamicReachabilityAgent(BaseTool):
         """Stop the tracer and return the set of vulnerable package names hit."""
         try:
             tracer_proc.terminate()
-            stdout, _ = await asyncio.wait_for(tracer_proc.communicate(), timeout=10)
+            stdout, stderr = await asyncio.wait_for(tracer_proc.communicate(), timeout=10)
         except (asyncio.TimeoutError, ProcessLookupError):
             try:
                 tracer_proc.kill()
             except ProcessLookupError:
                 pass
             stdout = b""
+            stderr = b""
+
+        if stderr:
+            err_text = stderr.decode("utf-8", errors="replace").strip()
+            if err_text:
+                logger.warning("[dynamic][ebpf] bpftrace stderr: %s", err_text)
 
         output = stdout.decode("utf-8", errors="replace")
         hit_packages: set[str] = set()

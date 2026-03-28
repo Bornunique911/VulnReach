@@ -14,6 +14,15 @@ class EbpfSettings(BaseModel):
     mode: str = "openat"
     # "bpftrace" or "bcc" — whichever is installed on the host.
     tracer: str = "bpftrace"
+    # sidecar_mode: inject a privileged sidecar container instead of patching
+    # the Dockerfile.  Non-invasive — requires docker-compose-based target.
+    sidecar_mode: bool = False
+    # kernel_check: log advisory warnings when kernel version < minimum for eBPF.
+    # Never blocks execution — set false to suppress the warnings.
+    kernel_check: bool = True
+    # language: hint to the sidecar/tracer about the target runtime language.
+    # "auto" lets the runtime detector choose; override with "python", "java", etc.
+    language: str = "auto"
 
 
 class RuntimeSettings(BaseModel):

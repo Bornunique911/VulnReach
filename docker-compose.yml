@@ -3,6 +3,10 @@ services:
     build: .
     ports:
       - "8000:8000"
+    # privileged + pid:host are required for eBPF tracing (bpftrace needs
+    # CAP_BPF/CAP_PERFMON and must see host-namespace PIDs from docker inspect).
+    privileged: true
+    pid: "host"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

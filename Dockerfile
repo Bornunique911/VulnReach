@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     lsb-release \
     git \
+    bpftrace \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI (not daemon — we use the host socket via DooD)

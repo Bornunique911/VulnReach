@@ -273,11 +273,107 @@ function buildConfigPage() {
     <pre style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:1.25rem;font-family:var(--mono);font-size:0.76rem;line-height:1.7;overflow-x:auto;margin:0">${_hlYaml(_DEFAULT_CONFIG_YAML)}</pre>`;
 }
 
+// ─── Settings page ─────────────────────────────────────────────────────────
+const _SETTINGS_SECTIONS = {
+  scan: {
+    tag: 'Scan', color: 'var(--green)',
+    title: 'Core Scan Settings',
+    desc: 'Choose which tools run and whether static reachability analysis is enabled. All tools degrade gracefully — missing tools are skipped.',
+    lines: ['scan:', '  static_reachability', '  tools:'],
+  },
+  runtime: {
+    tag: 'Runtime', color: 'var(--blue)',
+    title: 'Docker Runtime',
+    desc: 'Spins up the target container, drives Schemathesis traffic, and collects coverage. Requires a Dockerfile or docker-compose.yml in the repo.',
+    lines: ['runtime:'],
+  },
+  ebpf: {
+    tag: 'eBPF', color: 'var(--amber)',
+    title: 'eBPF Sidecar (experimental)',
+    desc: 'Language-agnostic coverage via an eBPF sidecar — no Dockerfile patching needed. Linux kernel ≥ 4.9, bpftrace or BCC required.',
+    lines: ['ebpf:'],
+  },
+  llm: {
+    tag: 'LLM', color: 'var(--text-dim)',
+    title: 'LLM Features',
+    desc: 'Optional AI features: OpenAPI spec generation and intelligent DAST steering. Supports Anthropic, OpenAI, and Ollama. All features work without any LLM configured.',
+    lines: ['openapi_generator:', 'intelligent_dast:'],
+  },
+  policy: {
+    tag: 'Risk & Policy', color: 'var(--red)',
+    title: 'Risk & Policy Gates',
+    desc: 'Set exposure level and data sensitivity for risk scoring. Add block_if rules to fail CI pipelines on confirmed critical findings.',
+    lines: ['risk:', 'policy:'],
+  },
+};
+
+function buildSettingsPage() {
+  const pre = document.getElementById('settings-yaml-pre');
+  if (pre) pre.innerHTML = _hlYaml(_DEFAULT_CONFIG_YAML);
+  _renderSettingsCards('all');
+}
+
+function _renderSettingsCards(section) {
+  const container = document.getElementById('settings-cards');
+  if (!container) return;
+  const entries = section === 'all'
+    ? Object.entries(_SETTINGS_SECTIONS)
+    : Object.entries(_SETTINGS_SECTIONS).filter(([k]) => k === section);
+  container.innerHTML = entries.map(([, s]) => `
+    <div class="settings-info-card">
+      <div class="sic-tag" style="color:${s.color}">${s.tag}</div>
+      <div class="sic-title">${s.title}</div>
+      <div class="sic-desc">${s.desc}</div>
+    </div>`).join('');
+}
+
+function filterSettingsSection(section, btn) {
+  document.querySelectorAll('.settings-filter').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  _renderSettingsCards(section);
+
+  const pre = document.getElementById('settings-yaml-pre');
+  if (!pre) return;
+  if (section === 'all') {
+    pre.innerHTML = _hlYaml(_DEFAULT_CONFIG_YAML);
+    return;
+  }
+  // Highlight only lines belonging to this section by dimming everything else
+  const keywords = _SETTINGS_SECTIONS[section]?.lines || [];
+  const lines = _DEFAULT_CONFIG_YAML.split('\n');
+  let inSection = false;
+  const out = lines.map(line => {
+    const trimmed = line.trim();
+    const startsSection = keywords.some(k => trimmed.startsWith(k.replace(':', '').trim() + ':') || line.startsWith(k));
+    const isTopLevel = line.length > 0 && line[0] !== ' ' && !line.startsWith('#');
+    if (startsSection) inSection = true;
+    else if (isTopLevel && !startsSection) inSection = false;
+    const hl = _hlYaml(line);
+    return inSection ? hl : `<span style="opacity:0.25">${hl}</span>`;
+  });
+  pre.innerHTML = out.join('\n');
+}
+
+function copySettingsYaml() {
+  navigator.clipboard.writeText(_DEFAULT_CONFIG_YAML).then(() => toast('YAML copied to clipboard', 'success'));
+}
+
+function downloadSettingsYaml() {
+  const blob = new Blob([_DEFAULT_CONFIG_YAML], { type: 'text/yaml' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'vulnreach.yaml';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('vulnreach.yaml downloaded', 'success');
+}
+
 // ─── Init ──────────────────────────────────────────────────────────────────
 (async () => {
   buildToolChips();
   buildToolsPage();
   buildConfigPage();
+  buildSettingsPage();
   // Check if server restarted since last session
   if (isLoggedIn()) {
     await checkBootId();
@@ -304,6 +400,8 @@ function setPage(id) {
       activeId === 'new' ? 'new' : activeId === 'api' ? 'api' : activeId === 'settings' ? 'settings' : activeId
     ));
   });
+  if (id === 'config') buildConfigPage();
+  if (id === 'settings') buildSettingsPage();
 }
 
 // ─── API helpers ───────────────────────────────────────────────────────────
