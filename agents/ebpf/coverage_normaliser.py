@@ -374,19 +374,51 @@ def normalise(raw_output: str, probe_config: "ProbeConfig", pid: int) -> Normali
 
     try:
         if parser == "python_line":
-            return _parse_python_line(raw_output)
-        if parser == "python_func":
-            return _parse_python_func(raw_output)
-        if parser == "java_method":
-            return _parse_java_method(raw_output, pid)
-        if parser == "go_uprobe":
-            return _parse_go_uprobe(raw_output, pid)
-        if parser == "ruby_method":
-            return _parse_ruby_method(raw_output)
-        if parser == "openat":
-            return _parse_openat(raw_output, runtime)
-        logger.warning("[ebpf][normalise] Unknown parser %r — returning empty", parser)
-        return {"runtime": runtime, "files": {}}
+            result = _parse_python_line(raw_output)
+        elif parser == "python_func":
+            result = _parse_python_func(raw_output)
+        elif parser == "java_method":
+            result = _parse_java_method(raw_output, pid)
+        elif parser == "go_uprobe":
+            result = _parse_go_uprobe(raw_output, pid)
+        elif parser == "ruby_method":
+            result = _parse_ruby_method(raw_output)
+        elif parser == "openat":
+            result = _parse_openat(raw_output, runtime)
+        else:
+            logger.warning("[ebpf][normalise] Unknown parser %r — returning empty", parser)
+            return {"runtime": runtime, "files": {}}
+
+        # Count raw tracer events (exclude bpftrace startup banner lines).
+        raw_event_count = sum(
+            1 for row in raw_output.splitlines()
+            if row.strip() and not row.startswith("Attaching")
+        )
+        file_count = len(result.get("files", {}))
+        total_lines = sum(
+            len(f.get("executed_lines", [])) for f in result.get("files", {}).values()
+        )
+        total_funcs = sum(
+            len(f.get("executed_functions", [])) for f in result.get("files", {}).values()
+        )
+        logger.info(
+            "[ebpf][normalise] parser=%s raw_events=%d → files=%d lines=%d functions=%d",
+            parser, raw_event_count, file_count, total_lines, total_funcs,
+        )
+
+        if file_count == 0:
+            logger.warning(
+                "[ebpf][normalise] Zero coverage captured (parser=%s). Possible causes: "
+                "(1) bpftrace probe did not attach — check [bpftrace stderr] lines above; "
+                "(2) no traffic reached the container; "
+                "(3) USDT probes absent — python:line requires CPython built with "
+                "--with-dtrace (ubuntu:22.04 has it; python:3.x-slim does not); "
+                "(4) /sys/kernel/debug not bind-mounted into the container; "
+                "(5) kernel < 4.9 or BTF unavailable.",
+                parser,
+            )
+
+        return result
     except Exception as exc:  # noqa: BLE001
         logger.error(
             "[ebpf][normalise] Unexpected error in parser=%s: %s", parser, exc,

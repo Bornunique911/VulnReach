@@ -28,13 +28,16 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from pathlib import Path
 
 import yaml
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_SIDECAR_IMAGE = "vulnreach-ebpf-sidecar:latest"
+# Source files for the sidecar image — copied into output_dir (which lives
+# under VULNREACH_WORK_DIR, a bind mount visible to the host Docker daemon).
+_SIDECAR_SRC = Path(__file__).parent / "sidecar"
 
 # Service names that are strong hints for the "primary" app service
 _PRIMARY_NAME_HINTS = {"web", "app", "api", "server", "backend", "service"}
@@ -116,13 +119,15 @@ def inject_sidecar(
     compose_path: Path,
     target_service: str,
     output_dir: Path,
-    sidecar_image: str = _DEFAULT_SIDECAR_IMAGE,
 ) -> Path:
     """Write a compose override file that injects the VulnReach eBPF sidecar.
 
     The override adds a single ``vulnreach-sidecar`` service that:
+      - Builds from agents/ebpf/sidecar/ (Dockerfile + sidecar_entrypoint.py
+        are copied into output_dir so the host Docker daemon can reach them
+        via the VULNREACH_WORK_DIR bind mount)
       - Shares the target service's PID namespace
-      - Mounts /sys/kernel/debug read-only (required for eBPF)
+      - Mounts /sys/kernel/debug read-only (required for eBPF tracepoints)
       - Mounts the coverage output directory (read-write)
       - Waits for the target service to become healthy before starting
       - Exits with code 0 on success so ``--exit-code-from vulnreach-sidecar``
@@ -132,12 +137,19 @@ def inject_sidecar(
     ----------
     compose_path:    Path to the user's docker-compose.yml (never modified).
     target_service:  Name of the service to attach the sidecar to.
-    output_dir:      Working directory under VULNREACH_WORK_DIR.  The coverage
-                     sub-directory is created here.
-    sidecar_image:   Docker image for the sidecar (must be pre-built or pullable).
+    output_dir:      Working directory under VULNREACH_WORK_DIR.  The sidecar
+                     Dockerfile and entrypoint are staged here so the host
+                     Docker daemon can build the image without needing /app.
 
     Returns the path of the written override file.
     """
+    # Stage the sidecar build files into output_dir.
+    # output_dir is under VULNREACH_WORK_DIR which is bind-mounted to the host,
+    # so the host Docker daemon can resolve these paths when building.
+    shutil.copy(_SIDECAR_SRC / "Dockerfile",             output_dir / "Dockerfile")
+    shutil.copy(_SIDECAR_SRC / "sidecar_entrypoint.py",  output_dir / "sidecar_entrypoint.py")
+    logger.debug("[ebpf][inject] Sidecar build files staged in %s", output_dir)
+
     # Ensure the coverage output sub-directory exists so Docker bind-mount
     # doesn't create it as root-owned.
     coverage_dir = output_dir / "coverage"
@@ -146,17 +158,20 @@ def inject_sidecar(
     # Absolute path required: Docker resolves volumes relative to the host,
     # not relative to the compose file location.
     coverage_host_path = str(coverage_dir.resolve())
+    build_context_path = str(output_dir.resolve())
 
     override: dict = {
         "services": {
             "vulnreach-sidecar": {
-                # --- privileges ---
+                # Build from the staged context under VULNREACH_WORK_DIR.
+                # This avoids requiring a pre-built image on the host.
+                "build": {
+                    "context": build_context_path,
+                    "dockerfile": "Dockerfile",
+                },
                 # On kernels >= 5.8, replace 'privileged: true' with:
                 #   cap_add: [CAP_BPF, CAP_PERFMON, SYS_PTRACE]
                 #   security_opt: ["no-new-privileges:false"]
-                # This is documented here but cannot be expressed as a YAML
-                # comment via yaml.dump; see VulnReach docs for the hardened form.
-                "image": sidecar_image,
                 "privileged": True,
                 "pid": f"service:{target_service}",
                 "volumes": [
@@ -167,9 +182,8 @@ def inject_sidecar(
                     f"TARGET_SERVICE={target_service}",
                     "COVERAGE_DIR=/coverage",
                     "LANGUAGE=auto",
-                    # How long (seconds) to wait for traffic after target is healthy.
-                    # VulnReach sets this to match runtime.timeout via env injection
-                    # in _run_ebpf_sidecar_mode.
+                    # VulnReach overwrites TRAFFIC_WAIT in _run_ebpf_sidecar_mode
+                    # to match runtime.coverage_wait from the scan config.
                     "TRAFFIC_WAIT=30",
                 ],
                 "depends_on": {
@@ -203,8 +217,8 @@ def inject_sidecar(
     override_path.write_text(header + yaml_body, encoding="utf-8")
 
     logger.info(
-        "[ebpf][inject] Override written: %s  (target=%s, image=%s)",
-        override_path, target_service, sidecar_image,
+        "[ebpf][inject] Override written: %s  (target=%s, build_ctx=%s)",
+        override_path, target_service, build_context_path,
     )
     return override_path
 
