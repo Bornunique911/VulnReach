@@ -258,11 +258,7 @@ class DynamicReachabilityAgent(BaseTool):
                     f"[dynamic] eBPF mode active (tracer={ebpf_cfg.tracer}, mode={ebpf_cfg.mode})"
                 )
                 return await self._run_ebpf_mode(context, repo_path, runtime, preflight)
-            logger.warning(
-                f"[dynamic] eBPF probe check failed ({ebpf_cfg.tracer} installed "
-                "but required kernel tracepoints unavailable — see above) — "
-                "falling back to Dockerfile-patch coverage mode"
-            )
+            # _ebpf_available() already logged why eBPF is unavailable; no second warning needed.
 
         openapi_path = preflight["openapi_path"]
 
@@ -1788,6 +1784,27 @@ class DynamicReachabilityAgent(BaseTool):
         cov_mount = f"{coverage_dir}:/coverage"
         if not any("/coverage" in str(v) for v in volumes):
             volumes.append(cov_mount)
+
+        # Write a VulnReach-controlled .coveragerc into the coverage_dir and
+        # mount it over the app's own .coveragerc.  This removes any restrictive
+        # "source = ." directive so site-packages are measured, which is required
+        # for correlating CVEs in third-party libraries.
+        vulnreach_coveragerc = Path(coverage_dir) / ".coveragerc"
+        vulnreach_coveragerc.write_text(
+            "[run]\n"
+            "omit = */migrations/*,manage.py,*/pip/*,*/setuptools/*,"
+            "*/pkg_resources/*,*/coverage/*,*/distutils/*\n"
+            "data_file = /tmp/.coverage\n"
+            "parallel = true\n"
+            "concurrency = multiprocessing\n"
+            "\n[json]\n"
+            "output = /tmp/coverage.json\n",
+            encoding="utf-8",
+        )
+        coveragerc_mount = f"{vulnreach_coveragerc}:/app/.coveragerc"
+        if not any(".coveragerc" in str(v) for v in volumes):
+            volumes.append(coveragerc_mount)
+
         svc["volumes"] = volumes
 
         # Ensure port is exposed
@@ -1843,45 +1860,35 @@ class DynamicReachabilityAgent(BaseTool):
           1. Must be Linux (Docker Desktop macOS runs LinuxKit but syscall
              tracepoints are not exposed there).
           2. tracer binary must be in PATH.
-          3. If running as non-root, perf_event_paranoid must be ≤ 2.
-             Ubuntu 24.04 ships with value=4, which causes bpftrace to refuse
-             with "only supports running as the root user".
-          4. The syscall tracepoint required for openat mode must exist —
+          3. The syscall tracepoint required for openat mode must exist —
              Docker Desktop's LinuxKit kernel only exposes hardware perf events,
              not syscall/kprobe/uprobe tracepoints.  A quick dry-run probe
              detects this before we waste a scan attempt.
         """
-        import os
         import platform
         if platform.system() != "Linux":
             logger.info("[dynamic][ebpf] Not Linux — eBPF unavailable")
             return False
+
+        # Fast-path: detect Docker Desktop (LinuxKit) via /proc/version.
+        # LinuxKit does not expose syscalls/kprobe/uprobe tracepoints to guests.
+        # Checking here avoids spawning a bpftrace dry-run that will always fail.
+        try:
+            with open("/proc/version") as _pv:
+                if "linuxkit" in _pv.read().lower():
+                    logger.warning(
+                        "[dynamic][ebpf] Running under Docker Desktop (LinuxKit) — "
+                        "syscall tracepoints are not available. "
+                        "eBPF requires a native Linux host. "
+                        "Set runtime.ebpf.enabled=false to suppress this warning."
+                    )
+                    return False
+        except OSError:
+            pass
+
         if shutil.which(tracer) is None:
             logger.info(f"[dynamic][ebpf] {tracer} not found in PATH")
             return False
-
-        # Check perf_event_paranoid for non-root users.
-        # Ubuntu 24.04+ defaults to 4, which blocks all BPF access for
-        # unprivileged users.  bpftrace v0.20+ enforces this hard.
-        # Fix: sudo sysctl -w kernel.perf_event_paranoid=2
-        #   OR sudo setcap cap_bpf,cap_perfmon,cap_sys_ptrace+eip $(which bpftrace)
-        if os.geteuid() != 0:
-            try:
-                paranoid = int(
-                    Path("/proc/sys/kernel/perf_event_paranoid").read_text().strip()
-                )
-                if paranoid >= 3:
-                    logger.warning(
-                        "[dynamic][ebpf] perf_event_paranoid=%d — bpftrace "
-                        "requires root or a lower value (≤2). "
-                        "Fix: sudo sysctl -w kernel.perf_event_paranoid=2  "
-                        "OR  sudo setcap cap_bpf,cap_perfmon,cap_sys_ptrace+eip "
-                        "$(which bpftrace)",
-                        paranoid,
-                    )
-                    return False
-            except Exception:  # noqa: BLE001
-                pass
 
         # Probe check: verify the openat tracepoint actually exists.
         # On Docker Desktop (LinuxKit), only hardware: perf events are available.
@@ -1894,21 +1901,12 @@ class DynamicReachabilityAgent(BaseTool):
             )
             if result.returncode != 0:
                 err = result.stderr.decode("utf-8", errors="replace").strip()
-                if "root" in err.lower() or "permission" in err.lower():
-                    logger.warning(
-                        "[dynamic][ebpf] bpftrace requires elevated privileges — "
-                        "run as root, lower perf_event_paranoid to ≤2, or grant "
-                        "CAP_BPF via: sudo setcap cap_bpf,cap_perfmon,"
-                        "cap_sys_ptrace+eip $(which bpftrace). "
-                        "bpftrace error: %s", err
-                    )
-                else:
-                    logger.warning(
-                        "[dynamic][ebpf] syscall tracepoints unavailable "
-                        "(likely Docker Desktop / LinuxKit kernel) — "
-                        "falling back to Dockerfile-patch coverage mode. "
-                        "bpftrace error: %s", err
-                    )
+                logger.warning(
+                    "[dynamic][ebpf] syscall tracepoints unavailable "
+                    "(likely Docker Desktop / LinuxKit kernel) — "
+                    "falling back to Dockerfile-patch coverage mode. "
+                    "bpftrace error: %s", err
+                )
                 return False
         except Exception as exc:  # noqa: BLE001
             logger.warning("[dynamic][ebpf] probe check failed: %s — skipping eBPF", exc)
@@ -1951,16 +1949,16 @@ class DynamicReachabilityAgent(BaseTool):
             # (int64) cast required: without it some bpftrace versions print hex.
             return (
                 f"usdt:/proc/{pid}/exe:python:line\n"
-                "{\n"
+                "{{\n"
                 '  printf("line:%s:%d\\n", str(arg0), (int64)arg2);\n'
-                "}\n"
+                "}}\n"
             )
         if mode == "usdt":
             return (
                 f"usdt:/proc/{pid}/exe:python:function__entry\n"
-                "{\n"
+                "{{\n"
                 '  printf("func:%s:%s\\n", str(arg0), str(arg1));\n'
-                "}\n"
+                "}}\n"
             )
         # openat — trace openat syscalls for the entire container process tree.
         # We walk up from each syscall's task to find whether any ancestor has
@@ -1969,7 +1967,7 @@ class DynamicReachabilityAgent(BaseTool):
         # the app, not just the single init PID.
         return (
             "tracepoint:syscalls:sys_enter_openat\n"
-            "{\n"
+            "{{\n"
             f"  $target = (uint64){pid};\n"
             "  $t = curtask;\n"
             "  $found = (uint8)0;\n"
@@ -1980,7 +1978,7 @@ class DynamicReachabilityAgent(BaseTool):
             "  if ($found) {\n"
             '    printf("open:%s\\n", str(args->filename));\n'
             "  }\n"
-            "}\n"
+            "}}\n"
         )
 
     async def _start_ebpf_tracer(
@@ -1990,29 +1988,15 @@ class DynamicReachabilityAgent(BaseTool):
         script = self._build_bpftrace_script(pid, mode)
         script_path = Path(tempfile.mktemp(suffix=".bt"))
         script_path.write_text(script, encoding="utf-8")
-        logger.debug("[dynamic][ebpf] bpftrace script written to %s", script_path)
 
         try:
             proc = await asyncio.create_subprocess_exec(
                 tracer, str(script_path),
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,  # capture stderr so startup errors are logged
             )
-            # Wait briefly for probe attachment, then verify bpftrace is still alive.
-            # A 1-second pause mirrors the lab's start_bpftrace() and catches
-            # permission errors, missing tracepoints, and BTF failures early.
-            await asyncio.sleep(1.0)
-            if proc.returncode is not None:
-                err = (await proc.stderr.read()).decode("utf-8", errors="replace").strip()
-                logger.warning(
-                    "[dynamic][ebpf] bpftrace exited immediately (rc=%d, script=%s): %s",
-                    proc.returncode, script_path, err[:500],
-                )
-                script_path.unlink(missing_ok=True)
-                return None
             logger.info(
-                "[dynamic][ebpf] Tracer attached (container_pid=%d, mode=%s, script=%s)",
-                pid, mode, script_path,
+                f"[dynamic][ebpf] Tracer started (pid={pid}, mode={mode}, tracer={tracer})"
             )
             return proc
         except Exception as exc:
@@ -2037,33 +2021,14 @@ class DynamicReachabilityAgent(BaseTool):
             stdout = b""
             stderr = b""
 
-        # Always surface bpftrace stderr proactively — surfaces attach errors,
-        # permission issues, and BTF warnings without waiting for caller to ask.
-        err_text = stderr.decode("utf-8", errors="replace").strip() if stderr else ""
-        if err_text:
-            for stderr_line in err_text.splitlines()[:10]:
-                logger.warning("[dynamic][ebpf] [bpftrace stderr] %s", stderr_line)
+        if stderr:
+            err_text = stderr.decode("utf-8", errors="replace").strip()
+            if err_text:
+                logger.warning("[dynamic][ebpf] bpftrace stderr: %s", err_text)
 
         output = stdout.decode("utf-8", errors="replace")
-
-        # Count raw tracer events (exclude bpftrace startup banner).
-        raw_events = [
-            row for row in output.splitlines()
-            if row.strip() and not row.startswith("Attaching")
-        ]
-        logger.info("[dynamic][ebpf] bpftrace emitted %d raw event line(s)", len(raw_events))
-
-        if not raw_events:
-            logger.warning(
-                "[dynamic][ebpf] Zero events from tracer — possible causes: "
-                "(1) probe did not attach (check [bpftrace stderr] lines above); "
-                "(2) no traffic reached container; "
-                "(3) USDT probes absent (python:line needs CPython --with-dtrace); "
-                "(4) /sys/kernel/debug not bind-mounted; "
-                "(5) kernel < 4.9 or BTF unavailable."
-            )
-
         hit_packages: set[str] = set()
+
         for line in output.splitlines():
             line_lower = line.lower()
             for pkg in vuln_packages:
@@ -2071,7 +2036,7 @@ class DynamicReachabilityAgent(BaseTool):
                 if len(import_name) >= _MIN_PKG_MATCH_LEN and import_name in line_lower:
                     hit_packages.add(pkg.lower())
 
-        logger.info("[dynamic][ebpf] Packages hit: %s", hit_packages or "none")
+        logger.info(f"[dynamic][ebpf] Packages hit: {hit_packages or 'none'}")
         return hit_packages
 
     async def _build_plain_image(
@@ -2196,20 +2161,16 @@ class DynamicReachabilityAgent(BaseTool):
                     },
                 )
 
-            logger.info("[dynamic][ebpf] Phase 4: discovering container PID")
             container_pid = await self._get_container_pid(container_id)
             if container_pid:
-                logger.info("[dynamic][ebpf] Container PID: %d", container_pid)
                 tracer_proc = await self._start_ebpf_tracer(
                     container_pid, ebpf_cfg.mode, ebpf_cfg.tracer
                 )
             else:
                 logger.warning(
-                    "[dynamic][ebpf] Could not get container PID — tracing skipped. "
-                    "Ensure vulnreach container has pid:host in docker-compose.yml."
+                    "[dynamic][ebpf] Could not get container PID — tracing skipped"
                 )
 
-            logger.info("[dynamic][ebpf] Phase 5: driving Schemathesis traffic")
             schemathesis_meta = await self._run_schemathesis(
                 base_url, openapi_path, container_port, workdir=None
             )
@@ -2392,27 +2353,11 @@ class DynamicReachabilityAgent(BaseTool):
 
             # --- Convert and correlate ---
             coverage_data = _ebpf_to_coverage_py(normalised)
-            file_count = len(normalised.get("files", {}))
-            line_count = sum(
-                len(f.get("executed_lines", []))
-                for f in normalised.get("files", {}).values()
-            )
-            func_count = sum(
-                len(f.get("executed_functions", []))
-                for f in normalised.get("files", {}).values()
-            )
+            file_count = len(coverage_data.get("files", {}))
             logger.info(
-                "[dynamic][ebpf-sidecar] Coverage: %d files, %d lines, %d functions"
-                " — runtime=%s",
-                file_count, line_count, func_count, normalised.get("runtime", "unknown"),
+                "[dynamic][ebpf-sidecar] Coverage: %d files from %s runtime",
+                file_count, normalised.get("runtime", "unknown"),
             )
-            if file_count == 0:
-                logger.warning(
-                    "[dynamic][ebpf-sidecar] Zero files in coverage output — "
-                    "sidecar may have failed to attach probes. "
-                    "Check compose logs for [bpftrace stderr] entries and verify "
-                    "/sys/kernel/debug is bind-mounted into the sidecar container."
-                )
 
             findings = self._correlate(
                 coverage_data,
