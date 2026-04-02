@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -95,24 +98,25 @@ class AuthResolver:
         if not command:
             return {}, {}
 
-        timeout = script_cfg.get("timeout_seconds", 10)
+        timeout = self._parse_timeout(script_cfg.get("timeout_seconds", 10))
         output_format = (script_cfg.get("output_format") or "json").lower()
+        argv = self._parse_command(command)
 
         try:
             result = subprocess.run(
-                command,
-                shell=True,
+                argv,
+                shell=False,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired:
             raise AuthResolutionError(
-                f"Auth script timed out after {timeout}s: {command}"
+                f"Auth script timed out after {timeout}s: {argv[0]}"
             )
         except OSError as exc:
             raise AuthResolutionError(
-                f"Auth script failed to execute: {command} — {exc}"
+                f"Auth script failed to execute: {argv[0]} — {exc}"
             )
 
         if result.returncode != 0:
@@ -138,6 +142,71 @@ class AuthResolver:
         self._script_cache = (headers, cookies, time.monotonic())
         logger.info(f"[auth_resolver] Script credentials cached ({len(headers)} headers, {len(cookies)} cookies)")
         return headers, cookies
+
+    @staticmethod
+    def _parse_timeout(value: Any) -> int:
+        """Parse and validate timeout_seconds from config."""
+        try:
+            timeout = int(value)
+        except (TypeError, ValueError):
+            raise AuthResolutionError(f"Invalid timeout_seconds value: {value!r}")
+        if timeout < 1 or timeout > 300:
+            raise AuthResolutionError("timeout_seconds must be between 1 and 300")
+        return timeout
+
+    @staticmethod
+    def _parse_command(command: Any) -> List[str]:
+        """Parse and validate script command as argv (no shell interpolation)."""
+        argv: List[str]
+        if isinstance(command, str):
+            cmd = command.strip()
+            if not cmd:
+                return []
+            try:
+                argv = shlex.split(cmd, posix=True)
+            except ValueError as exc:
+                raise AuthResolutionError(f"Auth script command parse failed: {exc}")
+        elif isinstance(command, list):
+            argv = []
+            for idx, item in enumerate(command):
+                if not isinstance(item, str):
+                    raise AuthResolutionError(
+                        f"Auth script command item at index {idx} must be a string"
+                    )
+                part = item.strip()
+                if not part:
+                    raise AuthResolutionError(
+                        f"Auth script command item at index {idx} is empty"
+                    )
+                argv.append(part)
+        else:
+            raise AuthResolutionError(
+                "Auth script command must be a string or list of strings"
+            )
+
+        if not argv:
+            raise AuthResolutionError("Auth script command is empty")
+
+        executable = argv[0]
+        has_path_sep = (os.path.sep and os.path.sep in executable) or (
+            os.path.altsep and os.path.altsep in executable
+        )
+        if has_path_sep:
+            exe_path = Path(executable).expanduser()
+            if not exe_path.is_absolute():
+                exe_path = (Path.cwd() / exe_path).resolve()
+            if not exe_path.exists() or not exe_path.is_file():
+                raise AuthResolutionError(f"Auth script executable not found: {executable}")
+            if not os.access(exe_path, os.X_OK):
+                raise AuthResolutionError(f"Auth script executable is not runnable: {executable}")
+            argv[0] = str(exe_path)
+        else:
+            resolved = shutil.which(executable)
+            if not resolved:
+                raise AuthResolutionError(f"Auth script executable not found on PATH: {executable}")
+            argv[0] = resolved
+
+        return argv
 
     # ------------------------------------------------------------------
     # Output parsers

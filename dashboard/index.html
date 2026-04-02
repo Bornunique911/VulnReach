@@ -270,6 +270,7 @@
           <div style="font-size:0.85rem;line-height:1.8;color:var(--text-dim)">
             <p style="color:var(--text);font-family:var(--sans);font-size:1rem;font-weight:600;margin-bottom:0.75rem">JWT Authentication</p>
             <p style="margin-bottom:1rem">VulnReach v2 uses JWT bearer tokens. Obtain a token via <code style="color:var(--green)">POST /login</code>, then pass it in the <code>Authorization</code> header.</p>
+            <p style="margin-bottom:1rem">Need long-lived credentials? Create API keys in <button class="action-btn" style="margin-left:0.25rem" onclick="setPage('settings')">Settings → API Keys</button></p>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem">
               <div style="border:1px solid var(--border);border-radius:6px;padding:1rem">
                 <div style="color:var(--green);font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem">Browser / Dashboard</div>
@@ -311,11 +312,63 @@
         <div class="page-header">
           <div>
             <div class="page-title">Settings</div>
-            <div class="page-subtitle">Sample scan config — copy and drop a <code style="font-size:0.75rem">vulnreach.yaml</code> into your repo</div>
+            <div class="page-subtitle">Sample scan config and API keys for curl/CI access</div>
           </div>
           <div style="display:flex;gap:0.5rem">
             <button class="btn-secondary" onclick="copySettingsYaml()"><i class="fas fa-copy" style="margin-right:0.4rem"></i>Copy YAML</button>
             <button class="btn-secondary" onclick="downloadSettingsYaml()"><i class="fas fa-download" style="margin-right:0.4rem"></i>Download</button>
+          </div>
+        </div>
+
+        <div class="scan-form-card" style="margin-bottom:1.25rem">
+          <div style="font-family:var(--sans);font-size:1rem;font-weight:600;color:var(--text);margin-bottom:0.25rem">API Keys</div>
+          <div style="font-size:0.75rem;color:var(--text-dim);margin-bottom:1rem">
+            Create long-lived API keys for scripts and curl. Use them as
+            <code style="color:var(--green)">Authorization: Bearer &lt;API_KEY&gt;</code>.
+          </div>
+
+          <div class="form-grid" style="margin-bottom:0.75rem">
+            <div class="form-group">
+              <label class="form-label">Key Name</label>
+              <input class="form-input" id="api-key-name" placeholder="ci-pipeline" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Expires</label>
+              <select class="form-input" id="api-key-expiry">
+                <option value="30" selected>30 days</option>
+                <option value="90">90 days</option>
+                <option value="365">365 days</option>
+                <option value="none">Never</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-actions" style="margin-bottom:0.75rem">
+            <button class="btn-primary" onclick="createApiKey()" id="create-api-key-btn">+ Create API Key</button>
+            <div class="form-hint" id="api-key-hint"></div>
+          </div>
+
+          <div id="api-key-created" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0.85rem 1rem;margin-bottom:1rem">
+            <div style="font-size:0.72rem;color:var(--amber);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.45rem">
+              Shown Once
+            </div>
+            <div id="api-key-created-value" style="font-family:var(--mono);font-size:0.78rem;color:var(--green);word-break:break-all;margin-bottom:0.65rem"></div>
+            <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+              <button class="btn-secondary" onclick="copyLastApiKey()">Copy Key</button>
+              <div id="api-key-curl-example" style="font-family:var(--mono);font-size:0.72rem;color:var(--text-dim)"></div>
+            </div>
+          </div>
+
+          <div class="table-card">
+            <div class="table-header">
+              <div>Name</div>
+              <div>Prefix</div>
+              <div>Created</div>
+              <div>Last Used</div>
+              <div>Expires</div>
+              <div></div>
+            </div>
+            <div id="api-keys-body"></div>
           </div>
         </div>
 

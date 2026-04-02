@@ -49,6 +49,8 @@ Ordered list of agents to run. Available values:
 | `trivy` | SCA — finds CVEs in dependencies | Recommended |
 | `tainter` | Static taint flow analysis | Yes — see [tainter.md](tainter.md) |
 | `python_reachability` | AST call-chain analysis | Yes |
+| `java_reachability` | Java reachability analysis (imports + pom/build declarations) | Yes |
+| `multi_language_reachability` | Cross-language reachability (Python/Java/JS/Go/C#/PHP; monorepo-aware) | Yes |
 | `route_extractor` | HTTP route map extraction | Yes |
 | `metadata` | PyPI → import name resolver | Yes |
 | `dynamic_reachability` | Docker-based runtime coverage | Yes |
@@ -116,6 +118,7 @@ scan:
 #### `scan.runtime.ebpf`
 
 Non-invasive kernel-level tracing. **Experimental — Linux only.**
+Requires explicit runtime opt-in with `VULNREACH_ALLOW_EBPF=true`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

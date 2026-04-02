@@ -3,6 +3,8 @@ from pathlib import Path
 import os
 import uuid
 import logging
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 import asyncio
@@ -20,9 +22,11 @@ from agents.runner import AgentRunner
 from api.auth import (
     UserPrincipal,
     create_token,
+    hash_api_key,
     hash_password,
     require_admin,
     require_user,
+    set_api_key_validator,
     verify_password,
 )
 from core.orchestrator import Orchestrator
@@ -76,7 +80,21 @@ storage = PostgresRepository(os.getenv("DATABASE_URL"))
 runner = AgentRunner(storage)
 correlation_service = CorrelationService()
 orchestrator = Orchestrator(storage, runner, correlation_service)
-AVAILABLE_TOOLS: List[str] = ["git", "trivy", "tainter", "python_reachability", "dynamic_reachability", "intelligent_dast", "semgrep", "route_extractor", "metadata", "pytest_coverage", "openapi_generator"]
+AVAILABLE_TOOLS: List[str] = [
+    "git",
+    "trivy",
+    "tainter",
+    "python_reachability",
+    "java_reachability",
+    "multi_language_reachability",
+    "dynamic_reachability",
+    "intelligent_dast",
+    "semgrep",
+    "route_extractor",
+    "metadata",
+    "pytest_coverage",
+    "openapi_generator",
+]
 
 # Registry of in-progress scan tasks — keyed by scan_id
 _active_scans: Dict[str, "asyncio.Task[None]"] = {}
@@ -107,11 +125,33 @@ async def on_startup() -> None:
     _seed_admin()
 
 
+def _resolve_api_key_principal(raw_key: str) -> UserPrincipal | None:
+    row = storage.get_user_for_api_key(hash_api_key(raw_key))
+    if not row:
+        return None
+    key_id = str(row.get("key_id") or "")
+    if key_id:
+        storage.touch_api_key_last_used(key_id)
+    return UserPrincipal(
+        id=str(row["user_id"]),
+        username=row["username"],
+        role=row["role"],
+    )
+
+
+set_api_key_validator(_resolve_api_key_principal)
+
+
 # ── Auth endpoints ───────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class ApiKeyCreateRequest(BaseModel):
+    name: str = "default"
+    expires_in_days: int | None = 30
 
 
 @app.post("/login")
@@ -122,6 +162,71 @@ async def login(request: Request, body: LoginRequest):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     principal = UserPrincipal(id=str(user["id"]), username=user["username"], role=user["role"])
     return {"access_token": create_token(principal), "token_type": "bearer"}
+
+
+def _iso(dt: datetime | None) -> str | None:
+    return dt.isoformat() if dt else None
+
+
+def _serialize_api_key_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": str(row.get("id")),
+        "user_id": str(row.get("user_id")),
+        "name": row.get("name"),
+        "key_prefix": row.get("key_prefix"),
+        "created_at": _iso(row.get("created_at")),
+        "last_used_at": _iso(row.get("last_used_at")),
+        "expires_at": _iso(row.get("expires_at")),
+        "revoked_at": _iso(row.get("revoked_at")),
+    }
+
+
+@app.get("/api-keys")
+async def list_api_keys(principal: UserPrincipal = Depends(require_user)):
+    keys = storage.list_api_keys(principal.id)
+    return {"api_keys": [_serialize_api_key_row(k) for k in keys]}
+
+
+@app.post("/api-keys")
+async def create_api_key(body: ApiKeyCreateRequest, principal: UserPrincipal = Depends(require_user)):
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if len(name) > 120:
+        raise HTTPException(status_code=400, detail="name must be <= 120 characters")
+    if body.expires_in_days is not None and (body.expires_in_days < 1 or body.expires_in_days > 3650):
+        raise HTTPException(status_code=400, detail="expires_in_days must be between 1 and 3650")
+
+    expires_at = None
+    if body.expires_in_days is not None:
+        expires_at = datetime.now(timezone.utc) + timedelta(days=body.expires_in_days)
+
+    key_prefix = f"vrk_{secrets.token_hex(4)}"
+    api_key = f"{key_prefix}.{secrets.token_urlsafe(32)}"
+    key_hash = hash_api_key(api_key)
+    key_id = str(uuid.uuid4())
+    row = storage.create_api_key(
+        key_id=key_id,
+        user_id=principal.id,
+        name=name,
+        key_prefix=key_prefix,
+        key_hash=key_hash,
+        expires_at=expires_at,
+    )
+
+    return {
+        "api_key": api_key,
+        "warning": "Store this key now. It will not be shown again.",
+        "key": _serialize_api_key_row(row),
+    }
+
+
+@app.delete("/api-keys/{key_id}")
+async def revoke_api_key(key_id: str, principal: UserPrincipal = Depends(require_user)):
+    revoked = storage.revoke_api_key(key_id, principal.id)
+    if not revoked:
+        raise HTTPException(status_code=404, detail="API key not found")
+    return {"id": key_id, "revoked": True}
 
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -188,6 +293,9 @@ async def start_scan(
     unknown = set(tools) - set(AVAILABLE_TOOLS)
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown tools: {sorted(unknown)}")
+
+    # Keep runtime tool execution aligned with the selected tools persisted in metadata.
+    config.scan.tools = tools
 
     scan_id = storage.create_scan(metadata={
         "repo_path": repo_path,

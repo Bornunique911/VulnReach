@@ -4,7 +4,7 @@ scan:
     - git                  # auto-injected when repo_url is provided
     - trivy                # SCA — finds CVEs in installed packages (required)
     - tainter              # taint analysis — OPTIONAL, skipped gracefully if not installed
-    - python_reachability  # AST call-chain analysis
+    - multi_language_reachability  # monorepo-aware static reachability (all detected languages)
     - route_extractor      # HTTP route map (Flask / FastAPI / Django)
     - metadata             # resolves PyPI → importable name map
     - dynamic_reachability # Docker-based runtime coverage (requires runtime.enabled=true)

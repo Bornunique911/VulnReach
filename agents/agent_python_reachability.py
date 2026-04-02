@@ -8,7 +8,10 @@ from typing import Any, Dict, List, Optional
 from correlation.engine import reachability_verdict
 from core.agent import BaseTool
 from core.models import AgentResult, ReachabilityFinding, ScanContext
-from .utils.python_reachability_analyzer import PythonReachabilityAnalyzer
+from agents.reachability.python_reachability_analyzer import (
+    PythonReachabilityAnalyzer,
+    run_python_reachability_analysis,
+)
 
 class PythonReachabilityAgent(BaseTool):
     tool_name = "python_reachability"
@@ -109,18 +112,18 @@ class PythonReachabilityAgent(BaseTool):
 
     def _extract_functions(self, analysis: Any) -> List[str]:
         """Extract enclosing function names from usage contexts with fallbacks."""
-        # Strategy 1: function_call or attribute_access contexts with enclosing_function
+        # Strategy 1: function_call or attribute_access contexts with enclosing_scope
         functions = list(dict.fromkeys(
-            ctx.enclosing_function for ctx in analysis.usage_contexts
-            if ctx.enclosing_function and ctx.usage_type in ("function_call", "attribute_access")
+            ctx.enclosing_scope for ctx in analysis.usage_contexts
+            if ctx.enclosing_scope and ctx.usage_type in ("function_call", "attribute_access")
         ))
         if functions:
             return functions
 
-        # Strategy 2: any context with enclosing_function
+        # Strategy 2: any context with enclosing_scope
         functions = list(dict.fromkeys(
-            ctx.enclosing_function for ctx in analysis.usage_contexts
-            if ctx.enclosing_function
+            ctx.enclosing_scope for ctx in analysis.usage_contexts
+            if ctx.enclosing_scope
         ))
         if functions:
             return functions

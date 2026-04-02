@@ -184,6 +184,21 @@ class PostgresRepository(StorageRepository):
             role TEXT NOT NULL DEFAULT 'analyst',
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
+
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id UUID PRIMARY KEY,
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            key_prefix TEXT NOT NULL,
+            key_hash TEXT UNIQUE NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            last_used_at TIMESTAMPTZ,
+            expires_at TIMESTAMPTZ,
+            revoked_at TIMESTAMPTZ
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
+        CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash);
         """
         with self._conn() as conn:
             with conn.cursor() as cur:
@@ -300,6 +315,22 @@ class PostgresRepository(StorageRepository):
                 END IF;
             END $$;
             """,
+            # Add API key support tables/indexes for existing deployments
+            """
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id UUID PRIMARY KEY,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                key_prefix TEXT NOT NULL,
+                key_hash TEXT UNIQUE NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                last_used_at TIMESTAMPTZ,
+                expires_at TIMESTAMPTZ,
+                revoked_at TIMESTAMPTZ
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash);",
         ]
         with self._conn() as conn:
             with conn.cursor() as cur:
@@ -614,6 +645,83 @@ class PostgresRepository(StorageRepository):
                     "INSERT INTO users (id, username, password_hash, role) VALUES (%s, %s, %s, %s) ON CONFLICT (username) DO NOTHING",
                     (user_id, username, password_hash, role),
                 )
+
+    def create_api_key(
+        self,
+        key_id: str,
+        user_id: str,
+        name: str,
+        key_prefix: str,
+        key_hash: str,
+        expires_at: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    INSERT INTO api_keys (id, user_id, name, key_prefix, key_hash, expires_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id, user_id, name, key_prefix, created_at, last_used_at, expires_at, revoked_at
+                    """,
+                    (key_id, user_id, name, key_prefix, key_hash, expires_at),
+                )
+                return cur.fetchone()
+
+    def list_api_keys(self, user_id: str) -> List[Dict[str, Any]]:
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT id, user_id, name, key_prefix, created_at, last_used_at, expires_at, revoked_at
+                    FROM api_keys
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    """,
+                    (user_id,),
+                )
+                return cur.fetchall() or []
+
+    def get_user_for_api_key(self, key_hash: str) -> Optional[Dict[str, Any]]:
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        ak.id AS key_id,
+                        u.id AS user_id,
+                        u.username,
+                        u.role
+                    FROM api_keys ak
+                    JOIN users u ON u.id = ak.user_id
+                    WHERE ak.key_hash = %s
+                      AND ak.revoked_at IS NULL
+                      AND (ak.expires_at IS NULL OR ak.expires_at > NOW())
+                    LIMIT 1
+                    """,
+                    (key_hash,),
+                )
+                return cur.fetchone()
+
+    def touch_api_key_last_used(self, key_id: str) -> None:
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE api_keys SET last_used_at = NOW() WHERE id = %s",
+                    (key_id,),
+                )
+
+    def revoke_api_key(self, key_id: str, user_id: str) -> bool:
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE api_keys
+                    SET revoked_at = NOW()
+                    WHERE id = %s AND user_id = %s AND revoked_at IS NULL
+                    """,
+                    (key_id, user_id),
+                )
+                return cur.rowcount > 0
 
     def _convert_correlation(self, row: Dict[str, Any]) -> Dict[str, Any]:
         risk_score = row.get("risk_score")

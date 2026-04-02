@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Optional
+from urllib.parse import unquote
 
 from correlation.engine import (
     apply_policy,
@@ -14,8 +15,8 @@ class CorrelationService:
     def correlate(
         self,
         vulnerabilities: List[Dict[str, Any]],
-        static_reachability: Dict[str, Dict[str, Any]],
-        dynamic_reachability: Dict[str, Dict[str, Any]],
+        static_reachability: Dict[tuple[str, str], Dict[str, Any]],
+        dynamic_reachability: Dict[tuple[str, str], Dict[str, Any]],
         exposure: str,
         policy_rules: Optional[List[Dict[str, Any]]] = None,
         semgrep_findings: Optional[List[Dict[str, Any]]] = None,
@@ -55,6 +56,7 @@ class CorrelationService:
         for vuln in vulnerabilities:
             severity = vuln.get("severity", "MEDIUM")
             package = vuln.get("package", "")
+            normalized_package = _normalize_package(package)
             cves = vuln.get("cve_id") or []
             if not isinstance(cves, list):
                 cves = [cves]
@@ -62,8 +64,15 @@ class CorrelationService:
                 cves = [None]
 
             for cve in cves:
-                dyn = dynamic_reachability.get(cve) if cve else None
-                sta = static_reachability.get(cve) if cve else None
+                cve_str = str(cve or "").strip()
+                key = (normalized_package, cve_str) if normalized_package and cve_str else None
+                dyn = dynamic_reachability.get(key) if key else None
+                sta = static_reachability.get(key) if key else None
+                # Legacy fallback for older CVE-only maps.
+                if not dyn and cve_str:
+                    dyn = dynamic_reachability.get(cve_str)  # type: ignore[arg-type]
+                if not sta and cve_str:
+                    sta = static_reachability.get(cve_str)  # type: ignore[arg-type]
 
                 # ── Assemble evidence signals ─────────────────────────────────
                 # Dynamic map: always has has_coverage_hit=True when present
@@ -298,3 +307,15 @@ def _static_reasoning(
     if subtype == "IMPORT":
         return "Package import was detected but no function-level usage or runtime execution was observed."
     return "Static evidence present; no runtime execution confirmed."
+
+
+def _normalize_package(package: Any) -> str:
+    raw = unquote(str(package or "").strip().lower())
+    if not raw:
+        return ""
+    if raw.startswith("pkg:"):
+        body = raw.split("pkg:", 1)[1]
+        if "/" in body:
+            body = body.split("/", 1)[1]
+        raw = body
+    return raw.split("@", 1)[0].strip()

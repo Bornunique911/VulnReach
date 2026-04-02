@@ -1,5 +1,6 @@
 import logging
-from typing import Any, Dict, Set
+from typing import Any, Dict, Set, Tuple
+from urllib.parse import unquote
 
 from core.models import AgentResult, ScanContext
 from agents.runner import AgentRunner
@@ -8,6 +9,59 @@ from correlation.service import CorrelationService
 from storage.repository import StorageRepository
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_package(package: Any) -> str:
+    raw = unquote(str(package or "").strip().lower())
+    if not raw:
+        return ""
+    if raw.startswith("pkg:"):
+        body = raw.split("pkg:", 1)[1]
+        if "/" in body:
+            body = body.split("/", 1)[1]
+        raw = body
+    return raw.split("@", 1)[0].strip()
+
+
+def _evidence_key(cve_id: Any, package: Any) -> Tuple[str, str] | None:
+    cve = str(cve_id or "").strip()
+    pkg = _normalize_package(package)
+    if not cve or not pkg:
+        return None
+    return (pkg, cve)
+
+
+def _merge_reachability(existing: Dict[str, Any] | None, incoming: Dict[str, Any]) -> Dict[str, Any]:
+    if not existing:
+        merged = dict(incoming)
+        merged["import_detected"] = bool(incoming.get("import_detected", False))
+        merged["call_chain_exists"] = bool(incoming.get("call_chain_exists", False))
+        merged["sink_reachable"] = bool(incoming.get("sink_reachable", False))
+        return merged
+
+    merged = dict(existing)
+    merged.update({k: v for k, v in incoming.items() if v is not None})
+    merged["import_detected"] = bool(existing.get("import_detected", False) or incoming.get("import_detected", False))
+    merged["call_chain_exists"] = bool(existing.get("call_chain_exists", False) or incoming.get("call_chain_exists", False))
+    merged["sink_reachable"] = bool(existing.get("sink_reachable", False) or incoming.get("sink_reachable", False))
+
+    existing_files = set(existing.get("files", []) or [])
+    existing_files.update(incoming.get("files", []) or [])
+    merged["files"] = list(existing_files)[:10]
+
+    existing_fn = (existing.get("function") or "").strip()
+    incoming_fn = (incoming.get("function") or "").strip()
+    if existing_fn and incoming_fn and incoming_fn not in existing_fn:
+        merged["function"] = f"{existing_fn}, {incoming_fn}"
+    elif incoming_fn:
+        merged["function"] = incoming_fn
+
+    try:
+        merged["confidence"] = max(float(existing.get("confidence", 0) or 0), float(incoming.get("confidence", 0) or 0))
+    except (TypeError, ValueError):
+        merged["confidence"] = existing.get("confidence", incoming.get("confidence", 0.1))
+
+    return merged
 
 
 class Orchestrator:
@@ -48,30 +102,64 @@ class Orchestrator:
                 extra={"scan_id": scan_id, "failed_tools": failed_tools},
             )
 
+        # Map CVE -> known vulnerable packages (used to fill missing package on agent evidence).
+        vuln_packages_by_cve: Dict[str, Set[str]] = {}
+        for vuln in context.vulnerabilities:
+            pkg = str(vuln.get("package") or "").strip()
+            if not pkg:
+                continue
+            cves = vuln.get("cve_id") or []
+            if not isinstance(cves, list):
+                cves = [cves]
+            for cve in cves:
+                cve_str = str(cve or "").strip()
+                if cve_str:
+                    vuln_packages_by_cve.setdefault(cve_str, set()).add(pkg)
+
+        def resolve_item_key(item: Dict[str, Any]) -> Tuple[Tuple[str, str], str, str] | None:
+            cve = str(item.get("cve_id") or "").strip()
+            if not cve:
+                return None
+
+            package = str(item.get("package") or "").strip()
+            if not package:
+                candidates = vuln_packages_by_cve.get(cve, set())
+                if len(candidates) == 1:
+                    package = next(iter(candidates))
+            key = _evidence_key(cve, package)
+            if not key:
+                return None
+            return key, cve, package
+
         # ------------------------------------------------------------------
         # Build STATIC reach map
-        # Source: tainter + python_reachability (import / call-chain evidence)
+        # Source: tainter + python_reachability + java_reachability
+        # (+ multi_language_reachability when present)
         # Verdict logic: import_detected / call_chain_exists only — no dynamic
         # ------------------------------------------------------------------
-        static_reach_map: Dict[str, Dict[str, Any]] = {}
+        static_reach_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
         for result in results:
-            if result.tool_name in {"tainter", "python_reachability"}:
+            if result.tool_name in {"tainter", "python_reachability", "java_reachability", "multi_language_reachability"}:
                 for item in result.findings:
-                    cve = item.get("cve_id")
-                    if not cve:
+                    resolved = resolve_item_key(item)
+                    if not resolved:
                         continue
+                    key, cve, package = resolved
                     verdict = reachability_verdict(
                         import_detected=item.get("import_detected", False),
                         call_chain_exists=item.get("call_chain_exists", False),
                         sink_reachable=False,  # static path never sets sink_reachable
                     )
-                    static_reach_map[cve] = {
+                    static_candidate = {
                         **item,
+                        "package": package,
+                        "cve_id": cve,
                         "verdict": verdict,
                         "evidence_type": "static",
                         "confidence": item.get("confidence") or confidence_from_verdict(verdict),
                     }
+                    static_reach_map[key] = _merge_reachability(static_reach_map.get(key), static_candidate)
 
         # ------------------------------------------------------------------
         # Build DYNAMIC reach map
@@ -84,79 +172,77 @@ class Orchestrator:
         #   5. Coverage confirms execution (from dynamic_reachability/pytest_coverage)
         #
         # Without all five, the package is NOT dynamically reachable.
-        # The only exception: direct library code in coverage (sink_reachable=True)
-        # with taint evidence — this is strong enough to skip the route gate.
         # ------------------------------------------------------------------
 
-        # Step 1 — collect CVEs that have a taint-flow trace (from tainter)
-        taint_cves: Set[str] = set()
+        # Step 1 — collect (package, CVE) tuples that have taint-flow trace.
+        taint_pairs: Set[Tuple[str, str]] = set()
         for result in results:
             if result.tool_name == "tainter":
                 for item in result.findings:
-                    cve = item.get("cve_id")
-                    if cve and (item.get("call_chain_exists") or item.get("sink_reachable")):
-                        taint_cves.add(cve)
+                    resolved = resolve_item_key(item)
+                    if not resolved:
+                        continue
+                    key, _, _ = resolved
+                    if item.get("call_chain_exists") or item.get("sink_reachable"):
+                        taint_pairs.add(key)
 
         # Step 1b — check if routes exist at all (route_extractor ran and found routes)
-        # Note: taint evidence already proves route→package flow, so we don't
-        # need to match package names against route handler names. We only check
-        # whether any routes were found (i.e. the app has HTTP endpoints).
+        # Route evidence is enforced as a hard gate for dynamic findings.
         has_routes = False
         for result in results:
             if result.tool_name == "route_extractor" and result.findings:
                 has_routes = True
                 break
 
-        # Step 2 — collect CVEs confirmed by runtime coverage
-        coverage_evidence: Dict[str, Dict[str, Any]] = {}
+        # Step 2 — collect (package, CVE) tuples confirmed by runtime coverage
+        coverage_evidence: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for result in results:
             if result.tool_name in ("dynamic_reachability", "pytest_coverage"):
                 for item in result.findings:
-                    cve = item.get("cve_id")
-                    if not cve:
+                    resolved = resolve_item_key(item)
+                    if not resolved:
                         continue
-                    existing = coverage_evidence.get(cve)
+                    key, cve, package = resolved
+                    candidate = {**item, "cve_id": cve, "package": package}
+                    existing = coverage_evidence.get(key)
                     if existing:
-                        existing["sink_reachable"] = existing.get("sink_reachable", False) or item.get("sink_reachable", False)
-                        existing["confidence"] = max(existing.get("confidence", 0), item.get("confidence", 0))
-                        existing_files = set(existing.get("files", []))
-                        existing_files.update(item.get("files", []))
-                        existing["files"] = list(existing_files)[:10]
-                        existing_fn = existing.get("function") or ""
-                        new_fn = item.get("function") or ""
-                        if new_fn and new_fn not in existing_fn:
-                            existing["function"] = f"{existing_fn}, {new_fn}".strip(", ")
-                        existing["import_time_hit"] = existing.get("import_time_hit", False) or item.get("import_time_hit", False)
+                        merged = _merge_reachability(existing, candidate)
+                        merged["import_time_hit"] = bool(existing.get("import_time_hit", False) or candidate.get("import_time_hit", False))
+                        coverage_evidence[key] = merged
                     else:
-                        coverage_evidence[cve] = dict(item)
+                        coverage_evidence[key] = dict(candidate)
 
         # Step 3 — gate dynamic findings on the full evidence chain
         #
         # Full chain: SCA (already filtered) → taint → routes → static → coverage
         #
-        # Taint evidence already proves route→package flow (the tainter traces
-        # user input through HTTP routes to the package). So has_taint implies
-        # route exposure — no need to separately match package names against
-        # route handler names.
+        # Route evidence is enforced globally (route_extractor found at least one
+        # endpoint). Per-package route-to-sink proof still comes from taint/static
+        # evidence checks below.
         #
         # Import-time-only (Strategy 2) is weak evidence — the app code that
         # imports the library ran, but the library's own code isn't in coverage.
         # Promoted to CONFIRMED only when the full chain is present.
-        dynamic_reach_map: Dict[str, Dict[str, Any]] = {}
+        dynamic_reach_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
-        for cve, dyn_item in coverage_evidence.items():
-            has_taint = cve in taint_cves
+        for key, dyn_item in coverage_evidence.items():
+            has_taint = key in taint_pairs
             has_coverage = dyn_item.get("sink_reachable", False)
-            has_static = cve in static_reach_map
+            has_static = key in static_reach_map
             import_time_only = dyn_item.get("import_time_hit", False) and not has_coverage
+
+            # Enforce route gate: dynamic evidence is only valid when route extraction
+            # confirmed the app exposes HTTP routes.
+            if not has_routes:
+                continue
 
             if import_time_only:
                 # Strategy 2 (import-in-executed-file): weak signal.
                 # Only promote if FULL evidence chain is satisfied:
-                #   taint (implies route exposure) + static reachability
+                #   taint + static reachability (+ route gate above)
                 if not (has_taint and has_static):
                     continue
-                # Full chain: SCA + taint + routes (via taint) + static + coverage (import-time)
+                # Full chain: SCA + taint + routes + static + coverage (import-time)
                 verdict = "CONFIRMED"
                 confidence = 0.95
             elif has_coverage and has_taint:
@@ -175,13 +261,14 @@ class Orchestrator:
                 # No coverage evidence at all — skip
                 continue
 
-            dynamic_reach_map[cve] = {
+            dynamic_reach_map[key] = {
                 **dyn_item,
                 "verdict": verdict,
                 "evidence_type": "dynamic",
                 "has_taint_flow": has_taint,
                 "has_coverage_hit": True,  # all paths above have some coverage evidence
                 "has_static_evidence": has_static,
+                "has_route_evidence": has_routes,
                 "confidence": confidence,
                 # sink_reachable=True means a call-site line executed — that IS a
                 # call chain. Propagate so classify_reachability() can reach the

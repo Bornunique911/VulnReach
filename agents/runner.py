@@ -1,4 +1,5 @@
-from typing import List
+import asyncio
+from typing import Any, Callable, Dict, List, Sequence, Tuple
 import logging
 
 from core.models import AgentResult, ScanContext
@@ -11,7 +12,9 @@ from .agent_trivy import TrivyAgent
 from .agent_tainter import TainterAgent
 from .agent_semgrep import SemgrepAgent
 from .agent_python_reachability import PythonReachabilityAgent
+from .agent_java_reachability import JavaReachabilityAgent
 from .agent_dynamic_reachability import DynamicReachabilityAgent
+from .reachability.agent_bridge import MultiLanguageReachabilityBridge
 from .agent_openapi_generator import OpenAPIGeneratorAgent
 from .agent_intelligent_dast import IntelligentDastAgent
 from .agent_pytest_coverage import PytestCoverageAgent
@@ -19,6 +22,9 @@ from .agent_routextractor import RouteExtractorAgent
 from .agent_metadata import MetadataAgent
 
 logger = logging.getLogger(__name__)
+
+
+_StageEntry = Tuple[Any, Callable[[ScanContext, AgentResult], None], str]
 
 
 class AgentRunner:
@@ -29,6 +35,8 @@ class AgentRunner:
         self.tainter = TainterAgent()
         self.semgrep = SemgrepAgent()
         self.python_reachability = PythonReachabilityAgent()
+        self.java_reachability = JavaReachabilityAgent()
+        self.multi_language_reachability = MultiLanguageReachabilityBridge()
         self.openapi_generator = OpenAPIGeneratorAgent()
         self.dynamic_reachability = DynamicReachabilityAgent()
         self.intelligent_dast = IntelligentDastAgent()
@@ -37,21 +45,7 @@ class AgentRunner:
         self.metadata_agent = MetadataAgent()
 
     async def run_all(self, context: ScanContext) -> List[AgentResult]:
-        """Execute all agents in the correct pipeline order.
-
-        Order:
-          1. git          — clone repo if repo_url provided
-          2. trivy        — SCA scan → context.vulnerabilities
-          3. metadata     — import_map → context.import_map (needed by tainter/dynamic)
-          4. tainter      — static taint flows → context.taint_flows
-          5. python_reachability — AST call-chain analysis
-          6. semgrep      — static analysis rules
-          7. route_extractor — extract HTTP routes
-          8. openapi_generator — LLM-generate openapi.json if missing (before dynamic)
-          9. dynamic_reachability — Docker + schemathesis + coverage
-         10. pytest_coverage — run test suite with coverage.py
-         11. intelligent_dast — Claude-steered DAST (needs taint_flows)
-        """
+        """Execute agents in dependency-aware stages with parallelism where safe."""
         results: List[AgentResult] = []
 
         cfg_tools = context.config.scan.tools if context.config else ["trivy", "tainter"]
@@ -59,185 +53,224 @@ class AgentRunner:
         if context.repo_url and "git" not in tools:
             tools.insert(0, "git")
 
-        # ── 1. Git clone ─────────────────────────────────────────────────
+        # ── Stage 1: Git clone (sequential prerequisite) ────────────────
         if "git" in tools and context.repo_url:
-            logger.info("agent_start", extra={"scan_id": context.scan_id, "agent": "git"})
-            git_result = await self._run_agent(self.git, context)
-            results.append(git_result)
-            self.storage.store_raw_output(
-                context.scan_id or "",
-                self.git.tool_name,
-                git_result.metadata.get("raw", git_result.metadata or {}),
+            results.append(
+                await self._run_and_persist(
+                    context,
+                    self.git,
+                    self._persist_git,
+                    error_event="agent_skipped",
+                )
             )
-            if git_result.metadata.get("error"):
-                logger.warning("agent_skipped", extra={"scan_id": context.scan_id, "agent": "git", "error": git_result.metadata})
-            else:
-                logger.info("agent_complete", extra={"scan_id": context.scan_id, "agent": "git"})
 
-        # ── 2. Trivy (SCA) ───────────────────────────────────────────────
+        # ── Stage 2: Trivy + Metadata prerequisites (sequential) ────────
         if "trivy" in tools:
-            logger.info("agent_start", extra={"scan_id": context.scan_id, "agent": "trivy"})
-            trivy_result = await self._run_agent(self.trivy, context)
-            results.append(trivy_result)
-            self.storage.store_raw_output(
-                context.scan_id or "",
-                self.trivy.tool_name,
-                trivy_result.metadata.get("raw", trivy_result.metadata or {}),
+            results.append(
+                await self._run_and_persist(
+                    context,
+                    self.trivy,
+                    self._persist_trivy,
+                    error_event="agent_skipped",
+                )
             )
-            self.storage.store_vulnerabilities(context.scan_id or "", trivy_result.findings)
-            context.vulnerabilities = trivy_result.findings
-            logger.info("agent_complete", extra={"scan_id": context.scan_id, "agent": "trivy"})
 
-        # ── 3. Metadata (import_map) — MUST run before tainter/dynamic ──
         if "metadata" in tools:
-            logger.info("agent_start", extra={"scan_id": context.scan_id, "agent": "metadata"})
-            meta_result = await self._run_agent(self.metadata_agent, context)
-            results.append(meta_result)
-            self.storage.store_raw_output(
-                context.scan_id or "",
-                self.metadata_agent.tool_name,
-                meta_result.metadata.get("raw", meta_result.metadata or {}),
+            results.append(
+                await self._run_and_persist(
+                    context,
+                    self.metadata_agent,
+                    self._persist_metadata,
+                    error_event="agent_skipped",
+                )
             )
-            if meta_result.metadata.get("error"):
-                logger.warning("agent_skipped", extra={"scan_id": context.scan_id, "agent": "metadata", "error": meta_result.metadata})
-            else:
-                logger.info("agent_complete", extra={"scan_id": context.scan_id, "agent": "metadata"})
 
-        # ── 4. Tainter (static taint flows) ──────────────────────────────
-        if "tainter" in tools:
-            logger.info("agent_start", extra={"scan_id": context.scan_id, "agent": "tainter"})
-            tainter_result = await self._run_agent(self.tainter, context)
-            results.append(tainter_result)
-            self.storage.store_raw_output(
-                context.scan_id or "",
-                self.tainter.tool_name,
-                tainter_result.metadata.get("raw", tainter_result.metadata or {}),
-            )
-            self.storage.store_reachability(context.scan_id or "", tainter_result.findings)
-            # Populate taint_flows on context for downstream agents (e.g. intelligent_dast)
-            context.taint_flows = tainter_result.metadata.get("flows", [])
-            logger.info("agent_complete", extra={"scan_id": context.scan_id, "agent": "tainter"})
+        # ── Stage 3: Static/supplemental analysis (parallel) ─────────────
+        # Safe to parallelize: all agents consume the same immutable repo/vuln
+        # snapshot, and context updates are applied after each agent completes.
+        static_stage_map: Dict[str, _StageEntry] = {
+            "tainter": (self.tainter, self._persist_tainter, "agent_skipped"),
+            "python_reachability": (
+                self.python_reachability,
+                self._persist_python_reachability,
+                "agent_skipped",
+            ),
+            "java_reachability": (
+                self.java_reachability,
+                self._persist_java_reachability,
+                "agent_skipped",
+            ),
+            "multi_language_reachability": (
+                self.multi_language_reachability,
+                self._persist_multi_language_reachability,
+                "agent_skipped",
+            ),
+            "semgrep": (self.semgrep, self._persist_semgrep, "agent_skipped"),
+            "route_extractor": (
+                self.route_extractor,
+                self._persist_route_extractor,
+                "agent_skipped",
+            ),
+        }
+        static_entries = self._stage_entries_from_tools(tools, static_stage_map)
+        if static_entries:
+            results.extend(await self._run_parallel_stage(context, static_entries))
 
-        # ── 5. Python Reachability (AST call-chain) ──────────────────────
-        if "python_reachability" in tools:
-            logger.info("agent_start", extra={"scan_id": context.scan_id, "agent": "python_reachability"})
-            py_result = await self._run_agent(self.python_reachability, context)
-            results.append(py_result)
-            self.storage.store_raw_output(
-                context.scan_id or "",
-                self.python_reachability.tool_name,
-                py_result.metadata.get("raw", py_result.metadata or {}),
-            )
-            self.storage.store_reachability(context.scan_id or "", py_result.findings)
-            if py_result.metadata.get("error"):
-                logger.warning("agent_skipped", extra={"scan_id": context.scan_id, "agent": "python_reachability", "error": py_result.metadata})
-            else:
-                logger.info("agent_complete", extra={"scan_id": context.scan_id, "agent": "python_reachability"})
-
-        # ── 6. Semgrep (static analysis rules) ───────────────────────────
-        if "semgrep" in tools:
-            logger.info("agent_start", extra={"scan_id": context.scan_id, "agent": "semgrep"})
-            semgrep_result = await self._run_agent(self.semgrep, context)
-            results.append(semgrep_result)
-            self.storage.store_raw_output(
-                context.scan_id or "",
-                self.semgrep.tool_name,
-                semgrep_result.metadata.get("raw", semgrep_result.metadata or {}),
-            )
-            self.storage.store_semgrep_findings(context.scan_id or "", semgrep_result.findings)
-            if semgrep_result.metadata.get("error"):
-                logger.warning("agent_skipped", extra={"scan_id": context.scan_id, "agent": "semgrep", "error": semgrep_result.metadata})
-            else:
-                logger.info("agent_complete", extra={"scan_id": context.scan_id, "agent": "semgrep"})
-
-        # ── 7. Route Extractor ────────────────────────────────────────────
-        if "route_extractor" in tools:
-            logger.info("agent_start", extra={"scan_id": context.scan_id, "agent": "route_extractor"})
-            route_result = await self._run_agent(self.route_extractor, context)
-            results.append(route_result)
-            self.storage.store_raw_output(
-                context.scan_id or "",
-                self.route_extractor.tool_name,
-                route_result.metadata.get("raw", route_result.metadata or {}),
-            )
-            self.storage.store_routes(context.scan_id or "", route_result.findings)
-            # Populate context.routes for downstream agents (dynamic, dast)
-            context.routes = route_result.findings
-            if route_result.metadata.get("error"):
-                logger.warning("agent_skipped", extra={"scan_id": context.scan_id, "agent": "route_extractor", "error": route_result.metadata})
-            else:
-                logger.info("agent_complete", extra={"scan_id": context.scan_id, "agent": "route_extractor"})
-
-        # ── 8. OpenAPI Generator (LLM) — runs before dynamic if enabled ──
-        # Generates openapi.json so dynamic_reachability can use it.
-        # Gated by runtime.enabled AND openapi_generator.enabled in config.
+        # ── Stage 4: OpenAPI generation (sequential prerequisite for dynamic) ──
         if context.config and context.config.scan.runtime.enabled and context.config.scan.openapi_generator.enabled:
-            logger.info("agent_start", extra={"scan_id": context.scan_id, "agent": "openapi_generator"})
-            oas_result = await self._run_agent(self.openapi_generator, context)
-            results.append(oas_result)
-            self.storage.store_raw_output(
-                context.scan_id or "",
-                self.openapi_generator.tool_name,
-                oas_result.metadata.get("raw", oas_result.metadata or {}),
+            results.append(
+                await self._run_and_persist(
+                    context,
+                    self.openapi_generator,
+                    self._persist_openapi_generator,
+                    error_event="agent_error",
+                )
             )
-            if oas_result.metadata.get("error"):
-                logger.warning("agent_error", extra={"scan_id": context.scan_id, "agent": "openapi_generator", "error": oas_result.metadata})
-            else:
-                logger.info("agent_complete", extra={"scan_id": context.scan_id, "agent": "openapi_generator"})
 
-        # ── 9. Dynamic Reachability (Docker + schemathesis + coverage) ───
-        # Requires: Dockerfile + openapi.json (may have been generated above)
+        # ── Stage 5: Runtime stage (parallel) ─────────────────────────────
+        runtime_entries: List[_StageEntry] = []
         if context.config and context.config.scan.runtime.enabled:
-            logger.info("agent_start", extra={"scan_id": context.scan_id, "agent": "dynamic_reachability"})
-            dyn_result = await self._run_agent(self.dynamic_reachability, context)
-            results.append(dyn_result)
-            self.storage.store_raw_output(
-                context.scan_id or "",
-                self.dynamic_reachability.tool_name,
-                dyn_result.metadata.get("raw", dyn_result.metadata or {}),
+            runtime_entries.append(
+                (self.dynamic_reachability, self._persist_dynamic_reachability, "agent_error")
             )
-            if dyn_result.findings:
-                self.storage.store_reachability(context.scan_id or "", dyn_result.findings)
-            if dyn_result.metadata.get("error"):
-                logger.warning("agent_error", extra={"scan_id": context.scan_id, "agent": "dynamic_reachability", "error": dyn_result.metadata})
-            else:
-                logger.info("agent_complete", extra={"scan_id": context.scan_id, "agent": "dynamic_reachability"})
-
-        # ── 10. Pytest Coverage (test suite with coverage.py) ─────────────
         if "pytest_coverage" in tools:
-            logger.info("agent_start", extra={"scan_id": context.scan_id, "agent": "pytest_coverage"})
-            pytest_result = await self._run_agent(self.pytest_coverage, context)
-            results.append(pytest_result)
-            self.storage.store_raw_output(
-                context.scan_id or "",
-                self.pytest_coverage.tool_name,
-                pytest_result.metadata.get("raw", pytest_result.metadata or {}),
+            runtime_entries.append(
+                (self.pytest_coverage, self._persist_pytest_coverage, "agent_skipped")
             )
-            if pytest_result.findings:
-                self.storage.store_reachability(context.scan_id or "", pytest_result.findings)
-            if pytest_result.metadata.get("error"):
-                logger.warning("agent_skipped", extra={"scan_id": context.scan_id, "agent": "pytest_coverage", "error": pytest_result.metadata})
-            else:
-                logger.info("agent_complete", extra={"scan_id": context.scan_id, "agent": "pytest_coverage"})
+        if runtime_entries:
+            results.extend(await self._run_parallel_stage(context, runtime_entries))
 
-        # ── 11. Intelligent DAST (Claude-steered, needs taint_flows) ──────
+        # ── Stage 6: Intelligent DAST (sequential) ────────────────────────
         if context.config and context.config.scan.intelligent_dast.enabled:
-            logger.info("agent_start", extra={"scan_id": context.scan_id, "agent": "intelligent_dast"})
-            dast_result = await self._run_agent(self.intelligent_dast, context)
-            results.append(dast_result)
-            self.storage.store_raw_output(
-                context.scan_id or "",
-                self.intelligent_dast.tool_name,
-                dast_result.metadata.get("raw", dast_result.metadata or {}),
+            results.append(
+                await self._run_and_persist(
+                    context,
+                    self.intelligent_dast,
+                    self._persist_intelligent_dast,
+                    error_event="agent_error",
+                )
             )
-            if dast_result.findings:
-                self.storage.store_reachability(context.scan_id or "", dast_result.findings)
-            if dast_result.metadata.get("error"):
-                logger.warning("agent_error", extra={"scan_id": context.scan_id, "agent": "intelligent_dast", "error": dast_result.metadata})
-            else:
-                logger.info("agent_complete", extra={"scan_id": context.scan_id, "agent": "intelligent_dast"})
 
         return results
+
+    async def _run_parallel_stage(
+        self,
+        context: ScanContext,
+        entries: Sequence[_StageEntry],
+    ) -> List[AgentResult]:
+        coros = [
+            self._run_and_persist(context, agent, persist, error_event=error_event)
+            for agent, persist, error_event in entries
+        ]
+        return list(await asyncio.gather(*coros))
+
+    def _stage_entries_from_tools(
+        self,
+        tools: Sequence[str],
+        stage_map: Dict[str, _StageEntry],
+    ) -> List[_StageEntry]:
+        entries: List[_StageEntry] = []
+        seen: set[str] = set()
+        for tool in tools:
+            if tool in stage_map and tool not in seen:
+                entries.append(stage_map[tool])
+                seen.add(tool)
+        return entries
+
+    async def _run_and_persist(
+        self,
+        context: ScanContext,
+        agent: Any,
+        persist: Callable[[ScanContext, AgentResult], None],
+        *,
+        error_event: str,
+    ) -> AgentResult:
+        agent_name = getattr(agent, "tool_name", "unknown")
+        logger.info("agent_start", extra={"scan_id": context.scan_id, "agent": agent_name})
+        result = await self._run_agent(agent, context)
+        persist(context, result)
+        if result.metadata.get("error"):
+            logger.warning(
+                error_event,
+                extra={
+                    "scan_id": context.scan_id,
+                    "agent": agent_name,
+                    "error": result.metadata,
+                },
+            )
+        else:
+            logger.info("agent_complete", extra={"scan_id": context.scan_id, "agent": agent_name})
+        return result
+
+    def _store_raw_result(self, context: ScanContext, tool_name: str, result: AgentResult) -> None:
+        self.storage.store_raw_output(
+            context.scan_id or "",
+            tool_name,
+            result.metadata.get("raw", result.metadata or {}),
+        )
+
+    def _persist_git(self, context: ScanContext, result: AgentResult) -> None:
+        self._store_raw_result(context, self.git.tool_name, result)
+
+    def _persist_trivy(self, context: ScanContext, result: AgentResult) -> None:
+        self._store_raw_result(context, self.trivy.tool_name, result)
+        self.storage.store_vulnerabilities(context.scan_id or "", result.findings)
+        context.vulnerabilities = result.findings
+
+    def _persist_metadata(self, context: ScanContext, result: AgentResult) -> None:
+        self._store_raw_result(context, self.metadata_agent.tool_name, result)
+        raw_map = result.metadata.get("raw")
+        if isinstance(raw_map, dict):
+            context.import_map = {
+                str(import_name): str(distribution)
+                for import_name, distribution in raw_map.items()
+            }
+
+    def _persist_tainter(self, context: ScanContext, result: AgentResult) -> None:
+        self._store_raw_result(context, self.tainter.tool_name, result)
+        self.storage.store_reachability(context.scan_id or "", result.findings)
+        context.taint_flows = result.metadata.get("flows", [])
+
+    def _persist_python_reachability(self, context: ScanContext, result: AgentResult) -> None:
+        self._store_raw_result(context, self.python_reachability.tool_name, result)
+        self.storage.store_reachability(context.scan_id or "", result.findings)
+
+    def _persist_java_reachability(self, context: ScanContext, result: AgentResult) -> None:
+        self._store_raw_result(context, self.java_reachability.tool_name, result)
+        if result.findings:
+            self.storage.store_reachability(context.scan_id or "", result.findings)
+
+    def _persist_multi_language_reachability(self, context: ScanContext, result: AgentResult) -> None:
+        self._store_raw_result(context, self.multi_language_reachability.tool_name, result)
+        if result.findings:
+            self.storage.store_reachability(context.scan_id or "", result.findings)
+
+    def _persist_semgrep(self, context: ScanContext, result: AgentResult) -> None:
+        self._store_raw_result(context, self.semgrep.tool_name, result)
+        self.storage.store_semgrep_findings(context.scan_id or "", result.findings)
+
+    def _persist_route_extractor(self, context: ScanContext, result: AgentResult) -> None:
+        self._store_raw_result(context, self.route_extractor.tool_name, result)
+        self.storage.store_routes(context.scan_id or "", result.findings)
+        context.routes = result.findings
+
+    def _persist_openapi_generator(self, context: ScanContext, result: AgentResult) -> None:
+        self._store_raw_result(context, self.openapi_generator.tool_name, result)
+
+    def _persist_dynamic_reachability(self, context: ScanContext, result: AgentResult) -> None:
+        self._store_raw_result(context, self.dynamic_reachability.tool_name, result)
+        if result.findings:
+            self.storage.store_reachability(context.scan_id or "", result.findings)
+
+    def _persist_pytest_coverage(self, context: ScanContext, result: AgentResult) -> None:
+        self._store_raw_result(context, self.pytest_coverage.tool_name, result)
+        if result.findings:
+            self.storage.store_reachability(context.scan_id or "", result.findings)
+
+    def _persist_intelligent_dast(self, context: ScanContext, result: AgentResult) -> None:
+        self._store_raw_result(context, self.intelligent_dast.tool_name, result)
+        if result.findings:
+            self.storage.store_reachability(context.scan_id or "", result.findings)
 
     async def _run_agent(self, agent, context: ScanContext) -> AgentResult:
         try:

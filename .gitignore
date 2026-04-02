@@ -1,13 +1,22 @@
-#FILES
+# FILES
+.env
 pytest.ini
 TODO-PRIVATE.md
+*.pyc
+*.jpeg
+*.jpg
+.DS_Store
 
-#DIRECTORIES
-.venv/*
-.env
-auditor-prompts/*
-scans/*
-security_findings/*
-tests/*
-reviews/*
-output/*
+# DIRECTORIES
+.venv/
+__pycache__/
+dist/
+auditor-prompts/
+scans/
+security_findings/
+reviews/
+output/
+temp/
+scripts/
+runtime_hooks/
+docs/

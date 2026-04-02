@@ -3,10 +3,13 @@ services:
     build: .
     ports:
       - "8000:8000"
-    # privileged + pid:host are required for eBPF tracing (bpftrace needs
-    # CAP_BPF/CAP_PERFMON and must see host-namespace PIDs from docker inspect).
-    privileged: true
-    pid: "host"
+    # Default mode is least-privilege (coverage-based runtime analysis).
+    # eBPF tracing is intentionally NOT enabled by default; use a dedicated
+    # eBPF profile/compose override when you explicitly need host tracing.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -16,16 +19,6 @@ services:
       # MUST be a bind mount (not a named volume) so the host Docker daemon
       # can resolve these paths when spawning sibling containers.
       - /tmp/vulnreach:/tmp/vulnreach
-      # eBPF: expose host debugfs so bpftrace can enumerate tracepoints.
-      # Docker mounts a fresh sysfs per container — the host debugfs at
-      # /sys/kernel/debug is NOT propagated even with privileged:true.
-      # Without this, bpftrace reports "tracepoint not found" for all probes.
-      - /sys/kernel/debug:/sys/kernel/debug:ro
-      # eBPF: expose host tracefs so bpftrace can enumerate tracepoints.
-      # Docker mounts a fresh sysfs per container — the host's tracefs submount
-      # at /sys/kernel/tracing is NOT propagated even with privileged:true.
-      # Without this, bpftrace reports "tracepoint not found" for all syscall probes.
-      - /sys/kernel/tracing:/sys/kernel/tracing
       # Persist scan results and config across restarts
       - ./scans:/app/scans
       - ./config:/app/config

@@ -10,22 +10,17 @@ docs/
 labs/
 output/
 reviews/
-scipts/
+scripts/
 scans/
+auditor-prompts/
 
 
 # Ignore specific file types
 *.log
 *.md
+*.jpeg
+*.jpg
 .env
 .github
 .vscode
-
-
-# Allow a specific file even if a pattern above would ignore it
-!README.md
-DAST.md
-EXECUTIVE_SUMMARY.md
-PRODUCT_DOCUMENT.md
-README.md
-TODO-PRIVATE.md
+conftest.py

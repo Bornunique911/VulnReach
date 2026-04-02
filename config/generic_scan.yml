@@ -1,0 +1,27 @@
+scan:
+  static_reachability: true
+  tools:
+    - git
+    - trivy                      # SCA via pom.xml / build.gradle
+    - multi_language_reachability # Python/Java/JS/Go/C#/PHP static reachability
+    - route_extractor             # static rules 
+
+  runtime:
+    enabled: false               # dynamic requires Dockerfile + Python runtime
+
+  openapi_generator:
+    enabled: false
+
+  intelligent_dast:
+    enabled: false
+
+risk:
+  exposure: public
+  data_sensitivity: high
+
+policy:
+  block_if:
+    - severity: CRITICAL
+      verdict: CONFIRMED
+    - severity: HIGH
+      verdict: CONFIRMED

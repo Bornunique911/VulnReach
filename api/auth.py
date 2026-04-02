@@ -5,7 +5,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import bcrypt as _bcrypt
 from dotenv import load_dotenv
@@ -36,11 +36,16 @@ def _reload_env_if_changed() -> None:
         logger.info(".env.local changed — env reloaded")
 
 _bearer = HTTPBearer(auto_error=False)
+_api_key_validator: Optional[Callable[[str], Optional["UserPrincipal"]]] = None
 
 
 def _prehash(plain: str) -> bytes:
     """SHA-256 pre-hash → 32 bytes, always under bcrypt's 72-byte limit."""
     return hashlib.sha256(plain.encode("utf-8")).digest()
+
+
+def hash_api_key(raw_key: str) -> str:
+    return hashlib.sha256((raw_key or "").encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -99,13 +104,36 @@ def _decode_token(token: str) -> UserPrincipal:
     return UserPrincipal(id=sub, username=username, role=role)
 
 
+def set_api_key_validator(validator: Callable[[str], Optional[UserPrincipal]]) -> None:
+    global _api_key_validator
+    _api_key_validator = validator
+
+
 def require_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(_bearer),
 ) -> UserPrincipal:
     """Dependency: any authenticated user."""
     if not credentials:
         raise HTTPException(status_code=401, detail="Missing Authorization header")
-    return _decode_token(credentials.credentials)
+    token = (credentials.credentials or "").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+
+    # JWT auth path
+    if token.count(".") == 2:
+        try:
+            return _decode_token(token)
+        except HTTPException:
+            # Fall through to API key check so "Bearer <api-key>" works.
+            pass
+
+    # API key auth path
+    if _api_key_validator is not None:
+        principal = _api_key_validator(token)
+        if principal is not None:
+            return principal
+
+    raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
 def require_admin(principal: UserPrincipal = Depends(require_user)) -> UserPrincipal:

@@ -129,11 +129,11 @@ flowchart LR
 
 ---
 
-## Agent Execution Order
+## Agent Execution Model
 
 ```mermaid
 gantt
-    title Agent pipeline (sequential, single scan)
+    title Agent pipeline (dependency-aware, partially parallel)
     dateFormat  X
     axisFormat %s
 
@@ -144,17 +144,18 @@ gantt
     section Import Map
     metadata agent     :a3, after a2, 1
 
-    section Static Reach
+    section Static/Supplemental (parallel stage)
     tainter            :a4, after a3, 5
     python_reachability:a5, after a3, 4
+    java_reachability  :a5b, after a3, 4
+    multi_lang_reach   :a5c, after a3, 4
+    semgrep            :a5d, after a3, 3
+    route_extractor    :a9, after a3, 2
 
-    section Dynamic Reach
+    section Dynamic Reach (parallel stage)
     openapi_generator  :crit, a6, after a5, 3
     dynamic_reachability:crit, a7, after a6, 15
-    pytest_coverage    :a8, after a5, 8
-
-    section Supplemental
-    route_extractor    :a9, after a5, 2
+    pytest_coverage    :a8, after a6, 8
 
     section Correlation
     correlation engine :a10, after a9, 1
@@ -173,4 +174,5 @@ gantt
 | `runtime.enabled = true` AND no Dockerfile | DynamicReachabilityAgent skips (preflight fail) |
 | `pytest_coverage` in tools AND no venv found | PytestCoverageAgent skips gracefully |
 | `pytest_coverage` in tools AND no pytest-cov installed | PytestCoverageAgent skips gracefully |
+| `multi_language_reachability` in tools | Runs analyzers for all detected repo languages (monorepo-aware), not just one primary |
 | `pipeline_status == BLOCK` | Scan marked `blocked`, CI gate fails |

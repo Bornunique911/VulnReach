@@ -73,6 +73,7 @@ All variables are read from `.env.local` (takes precedence) and then `.env`. Cha
 | `MAX_REQUEST_BODY_BYTES` | `1048576` | Max request body size in bytes (default 1 MB) |
 | `VULNREACH_WORK_DIR` | `/tmp/vulnreach` | Bind-mounted work dir for Docker-in-Docker scans |
 | `VULNREACH_TARGET_HOST` | auto-detected | Override hostname for sibling container health checks |
+| `VULNREACH_ALLOW_EBPF` | unset (`false`) | Explicit opt-in for eBPF mode (`true`/`1`) |
 | `ANTHROPIC_API_KEY` | — | Required only if `provider: anthropic` in config |
 | `OPENAI_API_KEY` | — | Required only if `provider: openai` in config |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint for local LLM inference |
@@ -170,6 +171,9 @@ VulnReach mounts `/var/run/docker.sock` to perform dynamic analysis. This grants
 - Run VulnReach in an isolated VM or namespace, not on a shared production host
 - Use Docker socket proxy (e.g. [Tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy)) to restrict API surface
 - Restrict network access so only authorised clients reach port 8000
+
+The default `docker-compose.yml` is now least-privilege for coverage-mode scanning and does **not** enable always-on host PID namespace or privileged kernel mounts.  
+If you explicitly enable `scan.runtime.ebpf.enabled: true`, set `VULNREACH_ALLOW_EBPF=true` and deploy with an eBPF-specific hardened profile/compose override.
 
 ### CORS
 

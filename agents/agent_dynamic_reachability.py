@@ -236,6 +236,19 @@ class DynamicReachabilityAgent(BaseTool):
         # Falls back to coverage mode when unavailable.
         ebpf_cfg = runtime.ebpf
         if ebpf_cfg.enabled:
+            ebpf_opt_in = (os.environ.get("VULNREACH_ALLOW_EBPF", "") or "").strip().lower() in {
+                "1", "true", "yes", "on"
+            }
+            if not ebpf_opt_in:
+                return AgentResult(
+                    tool_name=self.tool_name,
+                    findings=[],
+                    metadata={
+                        "status": "skipped",
+                        "reason": "ebpf_requires_opt_in_env:VULNREACH_ALLOW_EBPF",
+                        "container_started": {"status": "no", "id": "na"},
+                    },
+                )
             logger.warning(
                 "[dynamic] eBPF mode is EXPERIMENTAL — Linux only, untested in CI. "
                 "Set runtime.ebpf.enabled=false to use the stable Dockerfile-patch mode."

@@ -129,7 +129,7 @@ def load_config(path: str) -> ScanConfig:
 def default_config() -> ScanConfig:
     """Return a sensible default config for URL-only scans with no config file."""
     return ScanConfig(
-        scan=ScanSettings(tools=["git", "trivy", "tainter", "python_reachability", "route_extractor"]),
+        scan=ScanSettings(tools=["git", "trivy", "tainter", "multi_language_reachability", "route_extractor"]),
         risk=RiskSettings(exposure="public"),
         policy=PolicySettings(block_if=[PolicyRule(severity="CRITICAL", verdict="CONFIRMED")]),
     )

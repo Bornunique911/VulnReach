@@ -141,6 +141,7 @@ let currentScan = null;
 let currentTab = 'overview';
 let autoRefreshInterval = null;
 let currentRepoName = null;
+let lastCreatedApiKey = null;
 
 // ─── Repo name extraction ─────────────────────────────────────────────────
 function repoName(scan) {
@@ -268,7 +269,7 @@ function buildConfigPage() {
         Reference copy of <code style="color:var(--green);font-size:0.8rem">config/scan.sample.yml</code>.
         Pass a path to your own config file when launching a scan.
       </div>
-      <button class="action-btn" onclick="navigator.clipboard.writeText(_DEFAULT_CONFIG_YAML).then(()=>toast('Copied','success'))">Copy</button>
+      <button class="action-btn" onclick="copyDefaultConfigYaml()">Copy</button>
     </div>
     <pre style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:1.25rem;font-family:var(--mono);font-size:0.76rem;line-height:1.7;overflow-x:auto;margin:0">${_hlYaml(_DEFAULT_CONFIG_YAML)}</pre>`;
 }
@@ -311,6 +312,7 @@ function buildSettingsPage() {
   const pre = document.getElementById('settings-yaml-pre');
   if (pre) pre.innerHTML = _hlYaml(_DEFAULT_CONFIG_YAML);
   _renderSettingsCards('all');
+  if (isLoggedIn()) loadApiKeys();
 }
 
 function _renderSettingsCards(section) {
@@ -354,8 +356,47 @@ function filterSettingsSection(section, btn) {
   pre.innerHTML = out.join('\n');
 }
 
-function copySettingsYaml() {
-  navigator.clipboard.writeText(_DEFAULT_CONFIG_YAML).then(() => toast('YAML copied to clipboard', 'success'));
+async function copyTextToClipboard(text) {
+  const value = String(text ?? "");
+  if (!value) return false;
+
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch (e) {
+      // Fall through to legacy copy path.
+    }
+  }
+
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = value;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.left = '-1000px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    const copied = document.execCommand && document.execCommand('copy');
+    document.body.removeChild(ta);
+    return !!copied;
+  } catch {
+    return false;
+  }
+}
+
+async function copyDefaultConfigYaml() {
+  const ok = await copyTextToClipboard(_DEFAULT_CONFIG_YAML);
+  toast(ok ? 'Copied' : 'Copy failed — select and copy manually', ok ? 'success' : 'error');
+}
+
+async function copySettingsYaml() {
+  const ok = await copyTextToClipboard(_DEFAULT_CONFIG_YAML);
+  toast(ok ? 'YAML copied to clipboard' : 'Copy failed — select and copy manually', ok ? 'success' : 'error');
 }
 
 function downloadSettingsYaml() {
@@ -366,6 +407,110 @@ function downloadSettingsYaml() {
   a.click();
   URL.revokeObjectURL(a.href);
   toast('vulnreach.yaml downloaded', 'success');
+}
+
+function _showApiKeyHint(msg, isError = false) {
+  const el = document.getElementById('api-key-hint');
+  if (!el) return;
+  el.style.color = isError ? 'var(--red)' : 'var(--text-dim)';
+  el.textContent = msg;
+}
+
+async function loadApiKeys() {
+  const body = document.getElementById('api-keys-body');
+  if (!body) return;
+  body.innerHTML = `<div class="empty-state"><div class="spinner" style="margin:0 auto 0.6rem"></div><div class="empty-text">Loading API keys…</div></div>`;
+  try {
+    const data = await apiFetch('/api-keys');
+    renderApiKeys(data.api_keys || []);
+  } catch (e) {
+    body.innerHTML = `<div class="empty-state"><div class="empty-text">Unable to load API keys</div><div class="empty-sub">${escHtml(e.message || 'Request failed')}</div></div>`;
+  }
+}
+
+function renderApiKeys(keys) {
+  const body = document.getElementById('api-keys-body');
+  if (!body) return;
+  if (!keys.length) {
+    body.innerHTML = `<div class="empty-state"><div class="empty-text">No API keys yet</div><div class="empty-sub">Create one above for curl and automation.</div></div>`;
+    return;
+  }
+
+  body.innerHTML = keys.map(k => {
+    const revoked = !!k.revoked_at;
+    return `
+      <div class="table-row">
+        <div style="font-size:0.78rem;color:var(--text)">${escHtml(k.name || 'key')}</div>
+        <div style="font-family:var(--mono);font-size:0.72rem;color:var(--green)">${escHtml(k.key_prefix || '—')}</div>
+        <div class="ts">${fmtDate(k.created_at)}</div>
+        <div class="ts">${k.last_used_at ? fmtDate(k.last_used_at) : 'never'}</div>
+        <div class="ts">${k.expires_at ? fmtDate(k.expires_at) : 'never'}</div>
+        <div>
+          ${revoked
+            ? `<span class="badge-status blocked"><span class="s-dot"></span>revoked</span>`
+            : `<button class="action-btn" onclick="revokeApiKey('${k.id}')">Revoke</button>`}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function createApiKey() {
+  const nameEl = document.getElementById('api-key-name');
+  const expEl = document.getElementById('api-key-expiry');
+  const btn = document.getElementById('create-api-key-btn');
+  if (!nameEl || !expEl || !btn) return;
+
+  const name = nameEl.value.trim() || 'default';
+  const expRaw = expEl.value;
+  const expires_in_days = expRaw === 'none' ? null : Number(expRaw);
+
+  btn.disabled = true;
+  _showApiKeyHint('Creating API key…');
+  try {
+    const payload = { name, expires_in_days };
+    const data = await apiFetch('/api-keys', { method: 'POST', body: JSON.stringify(payload) });
+    const key = data.key || {};
+    lastCreatedApiKey = data.api_key || null;
+
+    const created = document.getElementById('api-key-created');
+    const value = document.getElementById('api-key-created-value');
+    const curl = document.getElementById('api-key-curl-example');
+    if (created && value && curl) {
+      created.style.display = '';
+      value.textContent = data.api_key || '';
+      curl.textContent = `curl -H "Authorization: Bearer ${data.api_key || '<API_KEY>'}" http://localhost:8000/scans`;
+    }
+
+    _showApiKeyHint(`Created key "${key.name || name}" successfully.`);
+    toast('API key created', 'success');
+    await loadApiKeys();
+  } catch (e) {
+    _showApiKeyHint(`Create failed: ${e.message || 'request error'}`, true);
+    toast('Failed to create API key', 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function revokeApiKey(keyId) {
+  if (!keyId) return;
+  if (!confirm('Revoke this API key?')) return;
+  try {
+    await apiFetch('/api-keys/' + encodeURIComponent(keyId), { method: 'DELETE' });
+    toast('API key revoked', 'success');
+    await loadApiKeys();
+  } catch (e) {
+    toast('Failed to revoke API key: ' + e.message, 'error');
+  }
+}
+
+async function copyLastApiKey() {
+  if (!lastCreatedApiKey) {
+    toast('No newly created key to copy', 'info');
+    return;
+  }
+  const ok = await copyTextToClipboard(lastCreatedApiKey);
+  toast(ok ? 'API key copied' : 'Copy failed — select and copy manually', ok ? 'success' : 'error');
 }
 
 // ─── Init ──────────────────────────────────────────────────────────────────
@@ -681,6 +826,9 @@ function renderScans() {
       <div><button class="action-btn" onclick="event.stopPropagation();openRepoPage('${encodeURIComponent(name)}')">View →</button></div>
     </div>`;
   }).join('');
+
+  const tableCard = body.closest('.table-card');
+  if (tableCard) initResizableTable(tableCard);
 }
 
 // ─── Scan actions (cancel / delete) ───────────────────────────────────────
@@ -1309,8 +1457,8 @@ function renderPanelRaw(scan) {
 async function copyRawJson(btn) {
   const pre = document.getElementById('raw-json-pre');
   if (!pre) return;
-  try {
-    await navigator.clipboard.writeText(pre.textContent);
+  const ok = await copyTextToClipboard(pre.textContent || '');
+  if (ok) {
     const orig = btn.innerHTML;
     btn.innerHTML = '✓ Copied';
     btn.style.color = 'var(--green)';
@@ -1320,7 +1468,7 @@ async function copyRawJson(btn) {
       btn.style.color = 'var(--text-dim)';
       btn.style.borderColor = 'var(--border)';
     }, 2000);
-  } catch {
+  } else {
     toast('Copy failed — select and copy manually', 'error');
   }
 }
@@ -1328,6 +1476,79 @@ async function copyRawJson(btn) {
 // ─── Auto refresh ──────────────────────────────────────────────────────────
 function startAutoRefresh() {
   autoRefreshInterval = setInterval(loadScans, 5000);
+}
+
+// ─── Resizable table columns ───────────────────────────────────────────────
+const RESIZE_STORAGE_KEY = 'vulnreach_scans_col_widths';
+const DEFAULT_COL_WIDTHS = [140, null, 120, 100, 140, 140]; // null = flex (1fr)
+
+function _colWidthsToCss(widths) {
+  return widths.map(w => w === null ? '1fr' : w + 'px').join(' ');
+}
+
+function _saveColWidths(widths) {
+  try { localStorage.setItem(RESIZE_STORAGE_KEY, JSON.stringify(widths)); } catch (_) {}
+}
+
+function _loadColWidths() {
+  try {
+    const raw = localStorage.getItem(RESIZE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length === DEFAULT_COL_WIDTHS.length) return parsed;
+    }
+  } catch (_) {}
+  return DEFAULT_COL_WIDTHS.slice();
+}
+
+function initResizableTable(tableCard) {
+  const header = tableCard.querySelector('.table-header');
+  if (!header || header.dataset.resizeInit) return;
+  header.dataset.resizeInit = '1';
+
+  const colWidths = _loadColWidths();
+  tableCard.style.setProperty('--col-widths', _colWidthsToCss(colWidths));
+
+  const cols = Array.from(header.children);
+  cols.forEach((col, i) => {
+    if (i === cols.length - 1) return; // no handle on last column
+    const handle = document.createElement('div');
+    handle.className = 'col-resize-handle';
+    col.appendChild(handle);
+
+    let startX, startWidths;
+
+    handle.addEventListener('mousedown', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      handle.classList.add('dragging');
+      startX = e.clientX;
+
+      // Resolve current widths: convert 1fr to actual px using rendered width
+      startWidths = cols.map((c, j) => {
+        if (colWidths[j] === null) return c.getBoundingClientRect().width;
+        return colWidths[j];
+      });
+
+      function onMove(e) {
+        const delta = e.clientX - startX;
+        const newW = Math.max(60, startWidths[i] + delta);
+        colWidths[i] = Math.round(newW);
+        // If next column was 1fr, keep it as 1fr (flexible); only fix if explicitly sized
+        tableCard.style.setProperty('--col-widths', _colWidthsToCss(colWidths));
+      }
+
+      function onUp() {
+        handle.classList.remove('dragging');
+        _saveColWidths(colWidths);
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      }
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
 }
 
 // ─── Toast ─────────────────────────────────────────────────────────────────
