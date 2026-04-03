@@ -4,6 +4,7 @@ version: v1.25.0
 exclude:
   global:
     - labs/**
+    - tests/**
 
 ignore: {}
 patch: {}

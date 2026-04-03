@@ -53,7 +53,7 @@ vulnreach-agent/
 ## Dev Environment
 
 ```bash
-git clone https://github.com/owasp/vulnreach.git
+git clone https://github.com/ihrishikesh0896/vulnreach.git
 cd vulnreach
 
 python -m venv .env

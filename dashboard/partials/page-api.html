@@ -8,8 +8,8 @@
         </div>
         <div class="scan-form-card">
           <div style="font-size:0.85rem;line-height:1.8;color:var(--text-dim)">
-            <p style="color:var(--text);font-family:var(--sans);font-size:1rem;font-weight:600;margin-bottom:0.75rem">JWT Authentication</p>
-            <p style="margin-bottom:1rem">VulnReach v2 uses JWT bearer tokens. Obtain a token via <code style="color:var(--green)">POST /login</code>, then pass it in the <code>Authorization</code> header.</p>
+            <p style="color:var(--text);font-family:var(--sans);font-size:1rem;font-weight:600;margin-bottom:0.75rem">Token Authentication</p>
+            <p style="margin-bottom:1rem">VulnReach v2 supports both JWT and API keys. Get JWT via <code style="color:var(--green)">POST /login</code>, or create API keys in <code style="color:var(--green)">Settings -> API Keys</code>. Both are sent as <code>Authorization: Bearer &lt;TOKEN&gt;</code>.</p>
             <p style="margin-bottom:1rem">Need long-lived credentials? Create API keys in <button class="action-btn" style="margin-left:0.25rem" onclick="setPage('settings')">Settings → API Keys</button></p>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem">
               <div style="border:1px solid var(--border);border-radius:6px;padding:1rem">
@@ -19,8 +19,8 @@
               </div>
               <div style="border:1px solid var(--border);border-radius:6px;padding:1rem">
                 <div style="color:var(--blue);font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem">API / Machine Access</div>
-                <div style="color:var(--text);font-weight:600;margin-bottom:0.4rem">JWT Bearer tokens</div>
-                <div style="font-size:0.75rem">Short-lived JWT tokens for CI/CD and service-to-service. Roles: <code style="color:var(--green)">admin</code> <code style="color:var(--green)">analyst</code>.</div>
+                <div style="color:var(--text);font-weight:600;margin-bottom:0.4rem">JWT or API Key bearer</div>
+                <div style="font-size:0.75rem">JWT for short-lived sessions; API keys for long-lived CI/CD and service-to-service auth. Roles: <code style="color:var(--green)">admin</code> <code style="color:var(--green)">analyst</code>.</div>
               </div>
             </div>
             <div style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1rem;font-family:var(--mono);font-size:0.75rem;color:var(--text-dim)">
@@ -28,6 +28,7 @@
               <div>curl -X POST http://localhost:8000/login \</div>
               <div>&nbsp;&nbsp;&nbsp;&nbsp; -H <span style="color:var(--green)">"Content-Type: application/json"</span> \</div>
               <div>&nbsp;&nbsp;&nbsp;&nbsp; -d <span style="color:var(--green)">'{"username":"admin","password":"changeme"}'</span></div>
+              <div style="color:var(--text-mute);margin-top:0.75rem"># Or use API key from Settings -&gt; API Keys</div>
               <div style="color:var(--text-mute);margin-top:0.75rem;margin-bottom:0.4rem"># 2. Use the token</div>
               <div>curl -H <span style="color:var(--green)">"Authorization: Bearer &lt;TOKEN&gt;"</span> \</div>
               <div>&nbsp;&nbsp;&nbsp;&nbsp; http://localhost:8000/scans</div>

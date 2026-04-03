@@ -76,6 +76,10 @@ export VULNREACH_URL=http://localhost:8000
 export VULNREACH_TOKEN=<jwt>
 ```
 
+`VULNREACH_TOKEN` can be either:
+- JWT from `POST /login`, or
+- API token (API key) created via `POST /api-keys` or UI `Settings -> API Keys`.
+
 Then run:
 ```bash
 vulnreach scan --repo-url https://github.com/your-org/your-repo --wait
@@ -121,7 +125,7 @@ vulnreach replay CVE-2021-33503 --scan-id <scan_id> --format mermaid
 |---|---|---|
 | `SQLITE_PATH` | Local standalone DB path | `~/.vulnreach/vulnreach.db` |
 | `VULNREACH_URL` | Enable client mode | unset |
-| `VULNREACH_TOKEN` | API auth token for client mode | unset |
+| `VULNREACH_TOKEN` | API auth token (JWT or API key) for client mode | unset |
 | `VULNREACH_USERNAME` | Auto-login username (client mode) | unset |
 | `VULNREACH_PASSWORD` | Auto-login password (client mode) | unset |
 | `VULNREACH_ALLOW_DOCKER_DAEMON` | Explicit opt-in for dynamic Docker scanning | unset (`false`) |

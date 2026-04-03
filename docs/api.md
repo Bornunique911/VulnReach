@@ -8,13 +8,17 @@ OpenAPI schema: `http://localhost:8000/openapi.json`
 
 ## Authentication
 
-All protected endpoints require a JWT Bearer token obtained from `POST /login`.
+All protected endpoints require a Bearer token in `Authorization`.
+Supported token types:
+- JWT access token from `POST /login` (short-lived)
+- API token (API key) from `POST /api-keys` (long-lived)
 
 ```
 Authorization: Bearer <token>
 ```
 
-Tokens are signed HS256, expire after `JWT_EXPIRE_MINUTES` (default 60 minutes), and are immediately invalidated when `JWT_SECRET` changes in `.env.local`.
+JWT tokens are signed HS256, expire after `JWT_EXPIRE_MINUTES` (default 60 minutes), and are immediately invalidated when `JWT_SECRET` changes in `.env.local`.
+API keys are opaque tokens beginning with `vrk_...`, validated server-side by hash.
 
 ---
 
@@ -70,6 +74,90 @@ Rate-limited: 10 requests/minute per IP.
 |--------|--------|
 | `401` | `"Invalid credentials"` |
 | `429` | Rate limit exceeded |
+
+---
+
+### `GET /api-keys`
+
+List API keys for the authenticated user.
+
+**Response `200`**
+```json
+{
+  "api_keys": [
+    {
+      "id": "uuid",
+      "user_id": "uuid",
+      "name": "ci-prod",
+      "key_prefix": "vrk_ab12cd34",
+      "created_at": "2026-04-03T12:00:00+00:00",
+      "last_used_at": null,
+      "expires_at": "2026-05-03T12:00:00+00:00",
+      "revoked_at": null
+    }
+  ]
+}
+```
+
+---
+
+### `POST /api-keys`
+
+Create an API token for curl/CI. The full token is returned once.
+
+**Request**
+```json
+{ "name": "ci-prod", "expires_in_days": 30 }
+```
+
+`expires_in_days` may be `null` for no expiry.
+
+**Response `200`**
+```json
+{
+  "api_key": "vrk_ab12cd34.<secret>",
+  "warning": "Store this key now. It will not be shown again.",
+  "key": {
+    "id": "uuid",
+    "user_id": "uuid",
+    "name": "ci-prod",
+    "key_prefix": "vrk_ab12cd34",
+    "created_at": "2026-04-03T12:00:00+00:00",
+    "last_used_at": null,
+    "expires_at": "2026-05-03T12:00:00+00:00",
+    "revoked_at": null
+  }
+}
+```
+
+**Errors**
+
+| Status | Detail |
+|--------|--------|
+| `400` | Missing name, invalid name length, invalid `expires_in_days` |
+| `401` | Missing or invalid token |
+
+---
+
+### `POST /api-keys/{key_id}/revoke`
+
+Revoke an API key owned by the authenticated user.
+
+**Response `200`**
+```json
+{ "id": "uuid", "revoked": true }
+```
+
+---
+
+### `DELETE /api-keys/{key_id}`
+
+Delete an API key owned by the authenticated user.
+
+**Response `200`**
+```json
+{ "id": "uuid", "deleted": true }
+```
 
 ---
 

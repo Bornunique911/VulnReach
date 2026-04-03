@@ -48,7 +48,7 @@ docker compose up --build
 
 ### 3.2 Startup with dynamic runtime profile
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.runtime.yml up --build
+docker compose -f docker-compose.yml -f dev-images/docker-compose.runtime.yml up --build
 ```
 
 Use this only when you need dynamic runtime scanning.
@@ -104,6 +104,15 @@ Expected JSON:
 
 ## 6. API Usage (from UI deployment)
 
+Auth options:
+- JWT from `POST /login` (short-lived)
+- API token (API key) from UI `Settings -> API Keys` or `POST /api-keys` (long-lived)
+
+Both use the same header:
+```bash
+Authorization: Bearer <TOKEN_OR_API_KEY>
+```
+
 ### 6.1 Login via API
 ```bash
 TOKEN=$(curl -s -X POST http://localhost:8000/login \
@@ -127,12 +136,36 @@ curl -s http://localhost:8000/scan/<scan_id> \
 
 ---
 
-## 7. Common Issues
+## 7. Add More Users
+
+VulnReach currently seeds only the initial admin user from `.env.local`.
+There is no public `/users` create endpoint yet, so additional users are created via repository methods.
+
+### 7.1 Create an analyst user
+```bash
+docker compose exec vulnreach python -c "import uuid; from storage import get_repository; from api.auth import hash_password; r=get_repository(); r.create_user(str(uuid.uuid4()), 'analyst1', hash_password('CHANGE_ME_STRONG_PASSWORD'), 'analyst'); print('created analyst1')"
+```
+
+### 7.2 Create an admin user
+```bash
+docker compose exec vulnreach python -c "import uuid; from storage import get_repository; from api.auth import hash_password; r=get_repository(); r.create_user(str(uuid.uuid4()), 'admin2', hash_password('CHANGE_ME_STRONG_PASSWORD'), 'admin'); print('created admin2')"
+```
+
+### 7.3 Verify login
+```bash
+curl -X POST http://localhost:8000/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"analyst1","password":"CHANGE_ME_STRONG_PASSWORD"}'
+```
+
+---
+
+## 8. Common Issues
 
 - UI loads but login fails:
   - verify seeded credentials and `.env.local`.
 - API returns `401`:
-  - token missing/expired.
+  - token missing/expired/revoked.
 - Dynamic agent skipped:
   - expected unless runtime profile and opt-in are enabled.
 - Browser CORS issues on separate frontend origin:

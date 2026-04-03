@@ -17,7 +17,7 @@
 #   • Docker with --privileged support (standard on GitHub Actions, GitLab CI, CircleCI)
 #
 # Usage:
-#   docker compose -f docker-compose.ebpf-test.yml up \
+#   docker compose -f dev-images/docker-compose.ebpf-test.yml up \
 #     --build --abort-on-container-exit --exit-code-from ebpf-runner
 #
 #   # Non-Linux / no bpftrace: unit + failure-mode tests only (no Docker required):
@@ -28,7 +28,7 @@ services:
   # ── Target: vulnerable Python app ──────────────────────────────────────────
   target:
     build:
-      context: labs/python_vuln_app
+      context: ../labs/python_vuln_app
       dockerfile: Dockerfile
     ports:
       - "13000:3000"
@@ -48,8 +48,8 @@ services:
   # ── eBPF test runner ────────────────────────────────────────────────────────
   ebpf-runner:
     build:
-      context: .
-      dockerfile: Dockerfile.ebpf-ci
+      context: ..
+      dockerfile: dev-images/Dockerfile.ebpf-ci
     # CAP_BPF is required to load BPF programs.
     # --privileged grants all capabilities including CAP_BPF, CAP_PERFMON,
     # CAP_SYS_PTRACE — the minimal set bpftrace needs.

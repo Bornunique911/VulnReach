@@ -4,7 +4,7 @@ import yaml
 
 
 def test_runtime_profile_uses_socket_proxy() -> None:
-    path = Path(__file__).resolve().parents[1] / "docker-compose.runtime.yml"
+    path = Path(__file__).resolve().parents[1] / "dev-images" / "docker-compose.runtime.yml"
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     services = data.get("services") or {}
 
