@@ -192,46 +192,46 @@ For repos without an OpenAPI spec, an LLM reads the route definitions and genera
 └──────────────────────────────┬───────────────────────────────────────┘
                                │ background task
                                ▼
-┌──────────────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────────────┐
 │                          Orchestrator                                 │
 │  ScanContext (mutable shared state passed through all agents)         │
-│  Builds: static_reach_map → taint_cves → coverage_evidence           │
-│          → dynamic_reach_map → DAST findings                         │
-│  Gating:  5-link evidence chain required for DYNAMICALLY_REACHABLE   │
-└───────┬──────────────────────────────────────────────┬───────────────┘
+│  Builds: static_reach_map → taint_cves → coverage_evidence            │
+│          → dynamic_reach_map → DAST findings                          │
+│  Gating:  5-link evidence chain required for DYNAMICALLY_REACHABLE    │
+└───────┬──────────────────────────────────────────────┬────────────────┘
         │                                              │
         ▼                                              ▼
-┌──────────────────┐                        ┌──────────────────────────┐
-│   Agent Runner   │                        │   Correlation Service    │
-│  Sequential:     │                        │   4-tier classification  │
-│  1.  git         │                        │   risk_score()           │
-│  2.  trivy       │                        │   priority assignment    │
-│  3.  metadata    │                        │   policy gate            │
-│  4.  tainter     │                        └──────────────────────────┘
-│  5.  python_reach│
-│  6.  semgrep     │
-│  7.  route_extr  │
-│  8.  openapi_gen │
+┌───────────────────┐                        ┌──────────────────────────┐
+│   Agent Runner    │                        │   Correlation Service    │
+│  Sequential:      │                        │   4-tier classification  │
+│  1.  git          │                        │   risk_score()           │
+│  2.  trivy        │                        │   priority assignment    │
+│  3.  metadata     │                        │   policy gate            │
+│  4.  tainter      │                        └──────────────────────────┘
+│  5.  python_reach │
+│  6.  semgrep      │
+│  7.  route_extr   │
+│  8.  openapi_gen  │
 │  9.  dynamic_reach│
-│  10. pytest_cov  │
-│  11. intell_dast │
-└──────────────────┘
+│  10. pytest_cov   │
+│  11. intell_dast  │
+└───────────────────┘
         │
         ▼
-┌──────────────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────────────┐
 │                    PostgreSQL  (JSONB-heavy schema)                   │
 │  scans | vulnerabilities | reachability_evidence | correlation_results│
 │  raw_outputs | semgrep_findings | routes_extracted | users            │
-└──────────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────────────┘
         │
         ▼
-┌──────────────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────────────┐
 │                    Dashboard  (Vanilla JS SPA)                        │
 │  Scan list → Repo drilldown → Scan detail panel                       │
 │  Tabs: Overview | Findings (4-tier cards) | Raw JSON                  │
 │  Export: CSV (client-side) | PDF (server-side reportlab)              │
 │  Theme: system/dark/light | JWT session                               │
-└──────────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Execution Lifecycle (one scan)

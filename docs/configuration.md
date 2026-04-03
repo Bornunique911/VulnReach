@@ -72,6 +72,7 @@ Controls Docker-based dynamic reachability analysis.
 | `bool` | `false` |
 
 Set to `true` to enable dynamic analysis. Requires Docker and a `Dockerfile` or `docker-compose.yml` in the target repo.
+Also requires explicit daemon opt-in with `VULNREACH_ALLOW_DOCKER_DAEMON=true`.
 
 #### `scan.runtime.timeout`
 

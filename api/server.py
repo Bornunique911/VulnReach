@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 import asyncio
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -24,14 +24,13 @@ from api.auth import (
     create_token,
     hash_api_key,
     hash_password,
-    require_admin,
     require_user,
     set_api_key_validator,
     verify_password,
 )
+from vulnreach.scan_response import augment_scan_response
 from core.orchestrator import Orchestrator
 from config.schema import load_config, default_config
-from core.models import ScanContext, AgentResult
 from correlation.service import CorrelationService
 from storage import get_repository
 
@@ -64,12 +63,19 @@ app.state.limiter = _limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS — configure allowed origins via CORS_ORIGINS env var (comma-separated).
-# Default to same-origin only in production; set "*" explicitly for open access.
+# Defaults to no cross-origin access (same-origin only) when unset.
+# Example: CORS_ORIGINS=https://app.example.com,https://ci.example.com
 _cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+if not _cors_origins:
+    import logging as _logging
+    _logging.getLogger(__name__).info(
+        "CORS_ORIGINS not set — cross-origin requests are blocked. "
+        "Set CORS_ORIGINS env var to allow specific origins."
+    )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins or ["*"],
-    allow_credentials=bool(_cors_origins),  # credentials only if origins are explicit
+    allow_origins=_cors_origins,
+    allow_credentials=bool(_cors_origins),
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
@@ -326,7 +332,7 @@ async def start_scan(
 @app.get("/scan/{scan_id}")
 async def get_scan(scan_id: str, principal: UserPrincipal = Depends(require_user)):
     scan = _fetch_scan_owned(scan_id, principal)
-    return {"scan_id": scan_id, **scan}
+    return {"scan_id": scan_id, **augment_scan_response(scan)}
 
 
 @app.post("/scan/{scan_id}/cancel")

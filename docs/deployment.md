@@ -48,6 +48,19 @@ curl http://localhost:8000/health
 
 The API is available at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
 
+### Enable Dynamic Reachability (explicit opt-in)
+
+Dynamic scans require Docker-daemon access and are disabled by default in the base compose file.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.runtime.yml up --build
+```
+
+This enables:
+- `docker-socket-proxy` sidecar (restricted Docker API surface)
+- `VULNREACH_ALLOW_DOCKER_DAEMON=true`
+- `DOCKER_HOST=tcp://docker-socket-proxy:2375`
+
 ---
 
 ## Environment Variables
@@ -72,6 +85,8 @@ All variables are read from `.env.local` (takes precedence) and then `.env`. Cha
 | `CORS_ORIGINS` | `` (empty = `*`) | Comma-separated allowed origins, e.g. `https://app.example.com` |
 | `MAX_REQUEST_BODY_BYTES` | `1048576` | Max request body size in bytes (default 1 MB) |
 | `VULNREACH_WORK_DIR` | `/tmp/vulnreach` | Bind-mounted work dir for Docker-in-Docker scans |
+| `VULNREACH_ALLOW_DOCKER_DAEMON` | unset (`false`) | Explicit opt-in for dynamic Docker-runtime scans (`true`/`1`) |
+| `DOCKER_HOST` | unset | Docker endpoint for dynamic scans (runtime profile sets `tcp://docker-socket-proxy:2375`) |
 | `VULNREACH_TARGET_HOST` | auto-detected | Override hostname for sibling container health checks |
 | `VULNREACH_ALLOW_EBPF` | unset (`false`) | Explicit opt-in for eBPF mode (`true`/`1`) |
 | `ANTHROPIC_API_KEY` | — | Required only if `provider: anthropic` in config |
@@ -166,10 +181,13 @@ location / {
 
 ### Docker socket security
 
-VulnReach mounts `/var/run/docker.sock` to perform dynamic analysis. This grants significant host privileges. Recommendations:
+Base `docker-compose.yml` does **not** mount `/var/run/docker.sock`.
+Dynamic mode is intentionally opt-in via `docker-compose.runtime.yml`, which routes Docker API calls through `tecnativa/docker-socket-proxy` and restricts exposed API groups.
+
+If you enable dynamic mode, recommendations:
 
 - Run VulnReach in an isolated VM or namespace, not on a shared production host
-- Use Docker socket proxy (e.g. [Tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy)) to restrict API surface
+- Keep the socket proxy policy minimal; only enable API groups required by your scan workflow
 - Restrict network access so only authorised clients reach port 8000
 
 The default `docker-compose.yml` is now least-privilege for coverage-mode scanning and does **not** enable always-on host PID namespace or privileged kernel mounts.  

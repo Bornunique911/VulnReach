@@ -12,7 +12,7 @@ scan:
     # - pytest_coverage    # uncomment to run target app's own test suite
 
   runtime:
-    enabled: true          # set to false to skip all Docker-based dynamic analysis
+    enabled: true          # requires VULNREACH_ALLOW_DOCKER_DAEMON=true
     timeout: 120           # max seconds for container startup + Schemathesis traffic
     coverage_wait: 10      # seconds to wait after traffic before flushing coverage
     container_port: 3000   # port the target app exposes inside its container

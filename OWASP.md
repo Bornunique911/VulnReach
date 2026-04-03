@@ -67,3 +67,10 @@ VulnReach is fully functional without any external paid service:
 ## Project Leaders
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for maintainer contact information and how to get involved.
+
+---
+
+## Readiness Artifacts
+
+- [Threat Model](docs/threat-model.md)
+- [OSS / Incubator Readiness Checklist](docs/incubator-readiness.md)

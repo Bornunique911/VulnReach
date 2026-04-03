@@ -4,8 +4,9 @@ without requiring a running server.  Uses SQLiteRepository for storage.
 """
 
 import asyncio
-import uuid
 from typing import Any, Dict, List, Optional
+
+from vulnreach.scan_response import augment_scan_response
 
 
 async def _run(
@@ -18,7 +19,7 @@ async def _run(
     from agents.runner import AgentRunner
     from core.orchestrator import Orchestrator
     from correlation.service import CorrelationService
-    from config.schema import load_config, default_config, ScanSettings, ScanConfig
+    from config.schema import load_config, default_config
 
     storage = get_repository()
     runner = AgentRunner(storage)
@@ -32,7 +33,6 @@ async def _run(
         config = default_config()
 
     if tools:
-        from config.schema import ScanSettings
         config = config.model_copy(update={"scan": config.scan.model_copy(update={"tools": tools})})
 
     scan_id = storage.create_scan(
@@ -54,7 +54,8 @@ async def _run(
         repo_url=repo_url,
     )
 
-    return storage.get_scan(scan_id)
+    scan = storage.get_scan(scan_id) or {}
+    return augment_scan_response(scan)
 
 
 def run_local_scan(

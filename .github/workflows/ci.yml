@@ -48,7 +48,7 @@ jobs:
 
     env:
       DATABASE_URL: postgresql://vulnreach:vulnreach@localhost:5432/vulnreach_test
-      JWT_SECRET: ci-test-jwt-secret-not-for-production
+      JWT_SECRET: ${{ github.run_id }}-${{ github.sha }}-ci
       BCRYPT_ROUNDS: "4"
 
     steps:
@@ -80,6 +80,36 @@ jobs:
         with:
           name: coverage-report
           path: .coverage
+
+  # ── Deterministic language fixtures (monorepo readiness gate) ─────────────
+  language-fixtures:
+    name: Language Fixture (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [java, javascript, go]
+
+    env:
+      VULNREACH_FIXTURE_LANGUAGE: ${{ matrix.language }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run deterministic fixture tests
+        run: |
+          pytest -q tests/test_language_fixtures.py tests/test_scan_response_contract.py
 
   # ── Docker image build (smoke test) ───────────────────────────────────────
   docker-build:

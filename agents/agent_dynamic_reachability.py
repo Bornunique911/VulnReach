@@ -62,8 +62,8 @@ try:
 except ImportError:
     _EBPF_SIDECAR_AVAILABLE = False
 
-from core.agent import BaseTool
-from core.models import AgentResult, ReachabilityFinding, ScanContext
+from core.agent import BaseTool  # noqa: E402
+from core.models import AgentResult, ReachabilityFinding, ScanContext  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +195,22 @@ class DynamicReachabilityAgent(BaseTool):
                 tool_name=self.tool_name,
                 findings=[],
                 metadata={"status": "disabled", "reason": "runtime.enabled is false"},
+            )
+
+        # Dynamic analysis talks to a container runtime (Docker daemon). Require
+        # explicit operator opt-in to avoid high-privilege defaults.
+        docker_opt_in = (os.environ.get("VULNREACH_ALLOW_DOCKER_DAEMON", "") or "").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        if not docker_opt_in:
+            return AgentResult(
+                tool_name=self.tool_name,
+                findings=[],
+                metadata={
+                    "status": "skipped",
+                    "reason": "docker_daemon_requires_opt_in_env:VULNREACH_ALLOW_DOCKER_DAEMON",
+                    "container_started": {"status": "no", "id": "na"},
+                },
             )
 
         if not context.repo_path:
@@ -452,7 +468,6 @@ class DynamicReachabilityAgent(BaseTool):
                 break
 
         if not openapi_path:
-            docker_desc = str(compose_path or dockerfile)
             reason = f"No openapi.json / openapi.yaml found in {repo_path}"
             logger.warning(f"[dynamic][preflight] SKIP — {reason}")
             return {
@@ -1394,7 +1409,6 @@ class DynamicReachabilityAgent(BaseTool):
         """
         compose_path = Path(preflight["compose_path"])
         openapi_path = preflight["openapi_path"]
-        timeout = runtime.timeout or self.default_timeout
         coverage_wait = runtime.coverage_wait
         container_port = runtime.container_port
 
@@ -1629,7 +1643,6 @@ class DynamicReachabilityAgent(BaseTool):
             )
             try:
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-                out = stdout.decode("utf-8", errors="replace")
                 logger.info(
                     f"[dynamic][compose] Coverage extraction attempt {attempt}/{retries}: "
                     f"rc={proc.returncode}"

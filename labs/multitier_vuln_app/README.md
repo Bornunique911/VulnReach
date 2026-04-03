@@ -1,3 +1,7 @@
+> **WARNING — INTENTIONALLY VULNERABLE APPLICATION**  
+> This app is a lab target for VulnReach testing. It contains real security vulnerabilities by design.  
+> **Never deploy it on a public network or a shared machine.**
+
 # multitier_vuln_app
 
 **3-tier vulnerable Django application for VulnReach testing.**

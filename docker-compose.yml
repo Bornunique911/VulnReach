@@ -13,8 +13,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      # DooD: give vulnreach access to the host Docker daemon
-      - /var/run/docker.sock:/var/run/docker.sock
       # Shared work dir: coverage volumes + temp Dockerfiles + cloned repos
       # MUST be a bind mount (not a named volume) so the host Docker daemon
       # can resolve these paths when spawning sibling containers.
@@ -24,10 +22,9 @@ services:
       - ./config:/app/config
       - ./libs:/app/libs
     environment:
-      - DATABASE_URL=postgresql://vulnreach:vulnreach@db:5432/vulnreach
-      # All temp dirs (coverage, patched Dockerfiles, cloned repos) go here.
-      # This path is a bind mount above, so it is visible to the host Docker daemon.
+      # Non-secret runtime paths — override in .env.local if needed.
       - VULNREACH_WORK_DIR=/tmp/vulnreach
+      # DATABASE_URL, JWT_SECRET, SEED_ADMIN_* and optional keys come from .env.local.
     env_file:
       - .env.local
     depends_on:
@@ -37,14 +34,14 @@ services:
 
   db:
     image: postgres:15-alpine
-    environment:
-      POSTGRES_DB: vulnreach
-      POSTGRES_USER: vulnreach
-      POSTGRES_PASSWORD: vulnreach
+    # Credentials are read from .env.local (same file used by the app container).
+    # Required keys: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+    env_file:
+      - .env.local
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vulnreach"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-vulnreach}"]
       interval: 5s
       timeout: 5s
       retries: 10

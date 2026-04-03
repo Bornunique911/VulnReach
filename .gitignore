@@ -1,6 +1,6 @@
 # FILES
-.env
-.env.local
+.env*
+!.env.example
 .snyk
 pytest.ini
 TODO-PRIVATE.md

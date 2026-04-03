@@ -37,24 +37,35 @@ The result is a prioritised finding list with four tiers:
 
 ### With Docker Compose (recommended)
 
+> **Security notice** — before starting, copy `.env.example` to `.env.local` and
+> replace every `CHANGE_ME` value with a strong random secret.  
+> Do **not** expose VulnReach on a public network without setting real credentials
+> and configuring `CORS_ORIGINS`.
+
 ```bash
 git clone https://github.com/owasp/vulnreach.git
 cd vulnreach
 
-# Configure secrets
+# 1. Create your local config
 cp .env.example .env.local
-# Edit .env.local: DATABASE_URL, JWT_SECRET, SEED_ADMIN_USERNAME, SEED_ADMIN_PASSWORD
 
+# 2. Fill in every CHANGE_ME — generate secrets with: openssl rand -hex 32
+$EDITOR .env.local
+
+# 3. Start the stack
 docker compose up --build
+
+# Optional: enable dynamic runtime scans (Docker daemon access via restricted socket proxy)
+# docker compose -f docker-compose.yml -f docker-compose.runtime.yml up --build
 ```
 
 ### Run a scan
 
 ```bash
-# Get a token
+# Get a token (replace with the credentials you set in .env.local)
 TOKEN=$(curl -s -X POST http://localhost:8000/login \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"changeme"}' | jq -r .access_token)
+  -d '{"username":"<your-admin-user>","password":"<your-admin-password>"}' | jq -r .access_token)
 
 # Start scan from a GitHub repo
 curl -X POST http://localhost:8000/scan \
@@ -87,9 +98,13 @@ curl http://localhost:8000/scan/<scan_id> \
 | Document | Description |
 |----------|-------------|
 | [docs/deployment.md](docs/deployment.md) | Docker Compose setup, env vars, production config |
+| [USAGE_PACKAGE.md](USAGE_PACKAGE.md) | Package/CLI installation, dependencies, startup, usage |
+| [USAGE_UI.md](USAGE_UI.md) | UI/server installation, dependencies, startup, usage |
 | [docs/configuration.md](docs/configuration.md) | Full config reference for `scan.yml` |
 | [docs/api.md](docs/api.md) | API endpoints, request/response schemas |
 | [docs/architecture.md](docs/architecture.md) | Pipeline diagrams, evidence chain, confidence ladder |
+| [docs/threat-model.md](docs/threat-model.md) | Trust boundaries, STRIDE threats, and mitigations |
+| [docs/incubator-readiness.md](docs/incubator-readiness.md) | OSS/OWASP Incubator readiness checklist |
 | [docs/development.md](docs/development.md) | Adding agents, correlation engine, database schema |
 | [docs/tainter.md](docs/development.md#tainter--optional-taint-analysis) | Optional taint analysis component |
 | [OWASP.md](OWASP.md) | OWASP mission alignment |

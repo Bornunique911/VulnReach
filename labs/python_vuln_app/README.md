@@ -1,3 +1,7 @@
+> **WARNING — INTENTIONALLY VULNERABLE APPLICATION**  
+> This app is a lab target for VulnReach testing. It contains real security vulnerabilities by design.  
+> **Never deploy it on a public network or a shared machine.**
+
 # PyYAML 5.3 + yaml.load FullLoader (CVE-2020-1747 pattern)
 
 ## Docker
