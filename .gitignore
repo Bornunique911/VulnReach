@@ -19,6 +19,7 @@ TODO-PRIVATE.md
 .venv/
 __pycache__/
 dist/
+build/
 auditor-prompts/
 scans/
 security_findings/
