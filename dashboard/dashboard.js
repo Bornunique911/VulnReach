@@ -12,6 +12,36 @@ const TOOL_DEFS = {
   metadata:             { icon: '◇', desc: 'Dependency metadata enrichment' },
 };
 
+// ─── Partial loader ────────────────────────────────────────────────────────
+const PARTIALS = [
+  ['_p-login',          'partials/login.html'],
+  ['_p-topbar',         'partials/topbar.html'],
+  ['_p-sidebar',        'partials/sidebar.html'],
+  ['_p-page-scans',     'partials/page-scans.html'],
+  ['_p-page-repo',      'partials/page-repo.html'],
+  ['_p-page-new',       'partials/page-new.html'],
+  ['_p-page-tools',     'partials/page-tools.html'],
+  ['_p-page-api',       'partials/page-api.html'],
+  ['_p-page-config',    'partials/page-config.html'],
+  ['_p-page-settings',  'partials/page-settings.html'],
+  ['_p-page-inventory', 'partials/page-inventory.html'],
+  ['_p-page-findings',  'partials/page-findings.html'],
+  ['_p-panel',          'partials/panel-detail.html'],
+  ['_p-modal-explain',  'partials/modal-explain.html'],
+  ['_p-modal-graph',    'partials/modal-graph.html'],
+];
+
+async function loadPartials() {
+  await Promise.all(PARTIALS.map(([id, url]) =>
+    fetch(url)
+      .then(r => { if (!r.ok) throw new Error(`${url} → ${r.status}`); return r.text(); })
+      .then(html => {
+        const el = document.getElementById(id);
+        if (el) el.outerHTML = html;
+      })
+  ));
+}
+
 // ─── Theme ─────────────────────────────────────────────────────────────────
 const THEMES = ['system', 'dark', 'light'];
 const THEME_ICONS = { system: '⊙', dark: '◐', light: '○' };
@@ -131,6 +161,11 @@ async function doLogin() {
 function doLogout() {
   setAuthToken(null);
   scans = [];
+  currentScan = null;
+  _fixPlanLoaded = null;
+  closePanel();
+  closeExplainModal();
+  closeGraphModal();
   toast('Signed out', 'info');
 }
 
@@ -142,6 +177,8 @@ let currentTab = 'overview';
 let autoRefreshInterval = null;
 let currentRepoName = null;
 let lastCreatedApiKey = null;
+let _fixPlanLoaded = null;
+let _explainProvider = 'none';
 
 // ─── Repo name extraction ─────────────────────────────────────────────────
 function repoName(scan) {
@@ -438,6 +475,7 @@ function renderApiKeys(keys) {
 
   body.innerHTML = keys.map(k => {
     const revoked = !!k.revoked_at;
+    const safeId  = escHtml(k.id);
     return `
       <div class="table-row">
         <div style="font-size:0.78rem;color:var(--text)">${escHtml(k.name || 'key')}</div>
@@ -445,10 +483,15 @@ function renderApiKeys(keys) {
         <div class="ts">${fmtDate(k.created_at)}</div>
         <div class="ts">${k.last_used_at ? fmtDate(k.last_used_at) : 'never'}</div>
         <div class="ts">${k.expires_at ? fmtDate(k.expires_at) : 'never'}</div>
-        <div>
+        <div style="position:relative">
           ${revoked
             ? `<span class="badge-status blocked"><span class="s-dot"></span>revoked</span>`
-            : `<button class="action-btn" onclick="revokeApiKey('${k.id}')">Revoke</button>`}
+            : ''}
+          <button class="action-btn key-menu-btn" onclick="event.stopPropagation();toggleKeyMenu('${safeId}',event)" title="Actions">⋯</button>
+          <div class="scan-menu-dropdown" id="key-menu-${safeId}">
+            ${!revoked ? `<div class="scan-menu-item" onclick="revokeApiKey('${safeId}')"><i class="fas fa-ban" style="width:14px"></i> Revoke</div>` : ''}
+            <div class="scan-menu-item danger" onclick="deleteApiKey('${safeId}')"><i class="fas fa-trash" style="width:14px"></i> Delete</div>
+          </div>
         </div>
       </div>`;
   }).join('');
@@ -492,15 +535,47 @@ async function createApiKey() {
   }
 }
 
+let _openKeyMenuId = null;
+
+function toggleKeyMenu(keyId, event) {
+  event.stopPropagation();
+  const next = _openKeyMenuId === keyId ? null : keyId;
+  _closeAllKeyMenus();
+  if (next) {
+    _openKeyMenuId = next;
+    const el = document.getElementById('key-menu-' + keyId);
+    if (el) el.classList.add('open');
+  }
+}
+
+function _closeAllKeyMenus() {
+  document.querySelectorAll('[id^="key-menu-"].scan-menu-dropdown.open').forEach(el => el.classList.remove('open'));
+  _openKeyMenuId = null;
+}
+
+document.addEventListener('click', _closeAllKeyMenus);
+
 async function revokeApiKey(keyId) {
   if (!keyId) return;
-  if (!confirm('Revoke this API key?')) return;
+  _closeAllKeyMenus();
   try {
-    await apiFetch('/api-keys/' + encodeURIComponent(keyId), { method: 'DELETE' });
+    await apiFetch('/api-keys/' + encodeURIComponent(keyId) + '/revoke', { method: 'POST' });
     toast('API key revoked', 'success');
     await loadApiKeys();
   } catch (e) {
-    toast('Failed to revoke API key: ' + e.message, 'error');
+    toast('Failed to revoke: ' + e.message, 'error');
+  }
+}
+
+async function deleteApiKey(keyId) {
+  if (!keyId) return;
+  _closeAllKeyMenus();
+  try {
+    await apiFetch('/api-keys/' + encodeURIComponent(keyId), { method: 'DELETE' });
+    toast('API key deleted', 'success');
+    await loadApiKeys();
+  } catch (e) {
+    toast('Failed to delete: ' + e.message, 'error');
   }
 }
 
@@ -514,7 +589,8 @@ async function copyLastApiKey() {
 }
 
 // ─── Init ──────────────────────────────────────────────────────────────────
-(async () => {
+async function initApp() {
+  applyTheme(_theme);  // re-run now that #theme-btn exists in the DOM
   buildToolChips();
   buildToolsPage();
   buildConfigPage();
@@ -528,10 +604,17 @@ async function copyLastApiKey() {
     await loadScans();
     startAutoRefresh();
   }
-})();
+}
+
+loadPartials().then(initApp).catch(err => {
+  document.body.innerHTML =
+    `<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:monospace;color:#f87171">
+       Failed to load dashboard partials: ${err.message}
+     </div>`;
+});
 
 // ─── Navigation ────────────────────────────────────────────────────────────
-const PAGES = ['scans','repo','new','tools','api','config','findings','settings'];
+const PAGES = ['scans','repo','new','tools','api','config','findings','settings','inventory'];
 
 function setPage(id) {
   PAGES.forEach(p => {
@@ -547,6 +630,7 @@ function setPage(id) {
   });
   if (id === 'config') buildConfigPage();
   if (id === 'settings') buildSettingsPage();
+  if (id === 'inventory') renderInventory();
 }
 
 // ─── API helpers ───────────────────────────────────────────────────────────
@@ -555,8 +639,14 @@ async function apiFetch(path, opts = {}, responseType = 'json') {
   if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
   const res = await fetch(API + path, { headers, ...opts });
   if (res.status === 401) {
-    // Token expired or invalid — clear and prompt login
+    // Token expired or invalid — wipe all state and return to login
     setAuthToken(null);
+    currentScan = null;
+    scans = [];
+    _fixPlanLoaded = null;
+    closePanel();
+    closeExplainModal();
+    closeGraphModal();
     toast('Session expired — please sign in again', 'error');
     throw new Error('Unauthorized');
   }
@@ -566,6 +656,7 @@ async function apiFetch(path, opts = {}, responseType = 'json') {
 
 // ─── Export helpers ────────────────────────────────────────────────────────
 function exportCSV(scan) {
+  if (!authToken) { toast('Session expired — please sign in again', 'error'); return; }
   if (!scan) return;
   const findings = (scan.findings || []).filter(f => f.finding_type !== 'dast' && f.package);
   // Group by package
@@ -611,6 +702,7 @@ function exportCSV(scan) {
 }
 
 async function exportPDF(scanId) {
+  if (!authToken) { toast('Session expired — please sign in again', 'error'); return; }
   if (!scanId) return;
   const btn = document.getElementById('panel-pdf-btn');
   const origHtml = btn ? btn.innerHTML : '';
@@ -780,6 +872,9 @@ async function loadScans() {
     updateStats();
     document.getElementById('api-status').textContent = 'API offline';
   }
+  // Re-render inventory if it is currently visible
+  const invPage = document.getElementById('page-inventory');
+  if (invPage && invPage.style.display !== 'none') renderInventory();
   // Re-render repo drilldown if it is currently visible
   const repoPage = document.getElementById('page-repo');
   if (repoPage && repoPage.style.display !== 'none' && currentRepoName) {
@@ -829,6 +924,150 @@ function renderScans() {
 
   const tableCard = body.closest('.table-card');
   if (tableCard) initResizableTable(tableCard);
+}
+
+// ─── Inventory page ───────────────────────────────────────────────────────
+function renderInventory() {
+  const grid = document.getElementById('inventory-grid');
+  if (!grid) return;
+
+  if (!scans.length) {
+    grid.innerHTML = `<div class="empty-state">
+      <div class="empty-icon"><i class="fas fa-warehouse"></i></div>
+      <div class="empty-text">No repositories yet</div>
+      <div class="empty-sub">Launch your first scan to add a repo to the inventory</div>
+    </div>`;
+    return;
+  }
+
+  const groups = groupByRepo(scans);
+  const sorted = Object.keys(groups).sort((a, b) => {
+    const la = groups[a][0]?.started_at || '';
+    const lb = groups[b][0]?.started_at || '';
+    return lb.localeCompare(la);
+  });
+
+  const sevOrder = ['CRITICAL','HIGH','MEDIUM','LOW'];
+  const sevColor = { CRITICAL: 'var(--red)', HIGH: 'var(--amber)', MEDIUM: 'var(--blue)', LOW: 'var(--text-mute)' };
+
+  grid.innerHTML = sorted.map(name => {
+    const repoScans = groups[name];
+    const latest    = repoScans[0];
+    const fullPath  = latest.repo_path || latest.repo_url || '';
+    const isUrl     = fullPath.startsWith('http');
+    const scanCount = repoScans.length;
+
+    // Worst status across all scans of this repo
+    const worstStatus = ['failed','blocked','partial','running','started','pending','completed']
+      .find(st => repoScans.some(s => s.status === st)) || latest.status || 'unknown';
+
+    // Severity breakdown from latest completed scan
+    const sev = latest.sev_breakdown || {};
+    const worstSev = sevOrder.find(s => sev[s] > 0);
+    const sevChips = sevOrder.filter(s => sev[s] > 0)
+      .map(s => `<span class="inv-sev-chip" style="color:${sevColor[s]}">${sev[s]}&thinsp;${s}</span>`)
+      .join('');
+
+    // Tools
+    const tools = (latest.tools || []);
+    const toolsHtml = tools.length
+      ? tools.map(t => `<span class="inv-tool-chip">${escHtml(t)}</span>`).join('')
+      : '<span style="color:var(--text-mute);font-size:0.65rem">—</span>';
+
+    // Border accent by worst severity
+    const accent = worstSev === 'CRITICAL' ? 'var(--red)'
+                 : worstSev === 'HIGH'     ? 'var(--amber)'
+                 : worstSev === 'MEDIUM'   ? 'var(--blue)'
+                 : 'var(--border)';
+
+    const safeEncName = encodeURIComponent(name);
+    const safePath    = escHtml(fullPath);
+    const safeRepo    = escHtml(latest.repo_path || '');
+    const safeUrl     = escHtml(latest.repo_url  || '');
+
+    return `
+    <div class="inv-card" style="border-left-color:${accent}" onclick="openRepoPage('${safeEncName}')">
+      <div class="inv-card-top">
+        <div class="inv-repo-name" title="${safePath}">
+          <i class="fas fa-${isUrl ? 'code-branch' : 'folder'}" style="font-size:0.75rem;color:var(--text-mute);margin-right:0.4rem"></i>${escHtml(name)}
+        </div>
+        <span class="badge-status ${worstStatus}" style="flex-shrink:0"><span class="s-dot"></span>${worstStatus}</span>
+      </div>
+
+      <div class="inv-path" title="${safePath}">${safePath ? truncate(safePath, 55) : '<span style="color:var(--text-mute)">—</span>'}</div>
+
+      <div class="inv-stats">
+        <div class="inv-stat"><span class="inv-stat-val">${scanCount}</span><span class="inv-stat-key">scan${scanCount !== 1 ? 's' : ''}</span></div>
+        <div class="inv-stat"><span class="inv-stat-val">${fmtDate(latest.started_at)}</span><span class="inv-stat-key">last scan</span></div>
+        ${worstSev ? `<div class="inv-stat"><span class="inv-stat-val" style="color:${sevColor[worstSev]}">${worstSev}</span><span class="inv-stat-key">worst sev</span></div>` : ''}
+      </div>
+
+      ${sevChips ? `<div class="inv-sev-row">${sevChips}</div>` : ''}
+
+      <div class="inv-tools">${toolsHtml}</div>
+
+      <div class="inv-actions" onclick="event.stopPropagation()">
+        <button class="btn-secondary" style="font-size:0.7rem;padding:0.3rem 0.7rem" onclick="openRepoPage('${safeEncName}')">History →</button>
+        <button class="btn-primary"   style="font-size:0.7rem;padding:0.3rem 0.7rem" onclick="prefillNewScan('${safeRepo}','${safeUrl}')">+ Scan Again</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function prefillNewScan(repoPath, repoUrl) {
+  setPage('new');
+  const pathEl = document.getElementById('f-repo-path');
+  const urlEl  = document.getElementById('f-repo-url');
+  if (pathEl) pathEl.value = repoPath || '';
+  if (urlEl)  urlEl.value  = repoUrl  || '';
+}
+
+function exportInventoryCSV() {
+  if (!authToken) { toast('Session expired — please sign in again', 'error'); return; }
+  if (!scans.length) { toast('No repos to export', 'info'); return; }
+
+  const groups  = groupByRepo(scans);
+  const sevKeys = ['CRITICAL','HIGH','MEDIUM','LOW'];
+
+  const headers = ['Repository','Path / URL','Total Scans','Last Scan','Latest Status',
+                   'Worst Severity','CRITICAL','HIGH','MEDIUM','LOW','Tools'];
+
+  const rows = Object.keys(groups)
+    .sort()
+    .map(name => {
+      const repoScans = groups[name];
+      const latest    = repoScans[0];
+      const sev       = latest.sev_breakdown || {};
+      const worstSev  = sevKeys.find(s => sev[s] > 0) || '';
+      const worstStatus = ['failed','blocked','partial','running','started','pending','completed']
+        .find(st => repoScans.some(s => s.status === st)) || latest.status || '';
+
+      return [
+        name,
+        latest.repo_path || latest.repo_url || '',
+        repoScans.length,
+        latest.started_at || '',
+        worstStatus,
+        worstSev,
+        sev.CRITICAL || 0,
+        sev.HIGH     || 0,
+        sev.MEDIUM   || 0,
+        sev.LOW      || 0,
+        (latest.tools || []).join('; '),
+      ];
+    });
+
+  const csv = [headers, ...rows]
+    .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
+    .join('\r\n');
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = `vulnreach-inventory-${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast(`Exported ${Object.keys(groups).length} repos`, 'success');
 }
 
 // ─── Scan actions (cancel / delete) ───────────────────────────────────────
@@ -1023,6 +1262,8 @@ async function openPanel(scanId) {
   document.getElementById('panel-title').textContent = scanId;
   document.getElementById('panel-overlay').classList.add('open');
   document.getElementById('detail-panel').classList.add('open');
+  document.getElementById('tab-fixplan').innerHTML = '';
+  _fixPlanLoaded = null;
 
   renderPanelOverview(currentScan);
 
@@ -1137,11 +1378,12 @@ document.addEventListener('click', () => {
 
 function setTab(name, el) {
   currentTab = name;
-  ['overview','findings','raw'].forEach(t => {
+  ['overview','findings','fixplan','raw'].forEach(t => {
     document.getElementById('tab-'+t).style.display = t===name ? '' : 'none';
   });
   document.querySelectorAll('.tab-item').forEach(i => i.classList.remove('active'));
   el.classList.add('active');
+  if (name === 'fixplan' && currentScan) loadFixPlan(currentScan.scan_id);
 }
 
 function renderPanelOverview(scan) {
@@ -1383,9 +1625,19 @@ function renderPanelFindings(scan) {
     // --- CVE badges ---
     const cveCls = isReachable ? 'cve-badge reachable' : 'cve-badge';
     const maxCves = 4;
+    const scanId = scan.scan_id;
+    const hasGraph = f.call_chain_exists;
+    function _cveBadgeHtml(c) {
+      const safeC = escHtml(c);
+      const explainBtn = `<button class="cve-action-btn" title="Explain ${safeC}" onclick="event.stopPropagation();openExplainModal('${escHtml(scanId)}','${safeC}')">⚡</button>`;
+      const graphBtn   = hasGraph
+        ? `<button class="cve-action-btn graph" title="Call graph" onclick="event.stopPropagation();openGraphModal('${escHtml(scanId)}','${safeC}')">⋯</button>`
+        : '';
+      return `<span class="${cveCls}">${safeC}</span>${explainBtn}${graphBtn}`;
+    }
     const cveHtml = f.cves.length
-      ? f.cves.slice(0, maxCves).map(c => `<span class="${cveCls}">${escHtml(c)}</span>`).join('')
-        + (f.cves.length > maxCves ? `<span class="cve-toggle" onclick="expandCves(this,'${cveCls}')">+${f.cves.length - maxCves} more</span>` : '')
+      ? f.cves.slice(0, maxCves).map(_cveBadgeHtml).join('')
+        + (f.cves.length > maxCves ? `<span class="cve-toggle" onclick="expandCves(this,'${cveCls}','${escHtml(scanId)}',${hasGraph})">+${f.cves.length - maxCves} more</span>` : '')
       : '<span style="color:var(--text-mute)">—</span>';
 
     // --- Files ---
@@ -1470,6 +1722,131 @@ async function copyRawJson(btn) {
     }, 2000);
   } else {
     toast('Copy failed — select and copy manually', 'error');
+  }
+}
+
+// ─── Fix Plan tab ─────────────────────────────────────────────────────────
+async function loadFixPlan(scanId) {
+  if (!scanId || _fixPlanLoaded === scanId) return;
+  const el = document.getElementById('tab-fixplan');
+  el.innerHTML = `<div class="empty-state"><div class="spinner" style="margin:0 auto 0.75rem"></div><div class="empty-text">Loading fix plan…</div></div>`;
+  try {
+    const data = await apiFetch(`/scan/${scanId}/fix-plan`);
+    _fixPlanLoaded = scanId;
+    renderFixPlan(data);
+  } catch(e) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠</div><div class="empty-text">Failed to load fix plan</div><div class="empty-sub">${escHtml(e.message)}</div></div>`;
+  }
+}
+
+function renderFixPlan(data) {
+  const el = document.getElementById('tab-fixplan');
+  const plan = data.fix_plan || [];
+  const summary = data.summary || {};
+  if (!plan.length) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">✓</div><div class="empty-text">No reachable CVEs to fix</div><div class="empty-sub">All detected CVEs are unreachable or already resolved</div></div>`;
+    return;
+  }
+  const summaryHtml = `<div class="fixplan-summary">
+    <div class="fixplan-summary-item"><div class="fixplan-summary-key">Packages to Upgrade</div><div class="fixplan-summary-val">${summary.packages_to_upgrade ?? plan.length}</div></div>
+    <div class="fixplan-summary-item"><div class="fixplan-summary-key">Reachable CVEs Fixed</div><div class="fixplan-summary-val" style="color:var(--red)">${summary.reachable_cves_fixable ?? 0}</div></div>
+  </div>`;
+  const cards = plan.map((p, i) => {
+    const borderCls = p.reachability_class === 'DYNAMICALLY_REACHABLE' ? 'dynamic' : 'static';
+    const rcLabel = p.reachability_class === 'DYNAMICALLY_REACHABLE'
+      ? `<span class="status-pill status-dynamic">Dynamically Reachable</span>`
+      : `<span class="status-pill status-static">Statically Reachable</span>`;
+    const upgradeHtml = p.upgrade_to
+      ? `<div class="fixplan-upgrade"><span class="cur">${escHtml(p.current_version)}</span><span class="arr">→</span><span class="next">${escHtml(p.upgrade_to)}</span></div>`
+      : `<div class="fixplan-upgrade"><span style="color:var(--text-mute)">No upgrade available</span></div>`;
+    const reachCves = p.reachable_cves_removed.map(c => `<span class="cve-badge reachable">${escHtml(c)}</span>`).join('');
+    const bonusCves = (p.unreachable_cves_also_fixed || []).length
+      ? `<div style="margin-top:0.45rem"><div class="fixplan-cve-label">Also fixes (unreachable)</div><div class="fixplan-cves">${p.unreachable_cves_also_fixed.map(c=>`<span class="cve-badge">${escHtml(c)}</span>`).join('')}</div></div>`
+      : '';
+    return `<div class="fixplan-card ${borderCls}">
+      <div class="fixplan-card-top"><span class="fixplan-pkg-name">#${i+1} ${escHtml(p.package)}</span>${rcLabel}<span style="margin-left:auto;font-size:0.65rem;color:var(--text-mute);font-family:var(--mono)">risk ${p.risk_score.toFixed(1)}</span></div>
+      ${upgradeHtml}
+      <div class="fixplan-cve-label">Reachable CVEs removed (${p.reachable_cves_removed.length})</div>
+      <div class="fixplan-cves">${reachCves}</div>${bonusCves}
+    </div>`;
+  }).join('');
+  el.innerHTML = summaryHtml + cards;
+}
+
+// ─── Explain modal ─────────────────────────────────────────────────────────
+let _explainScanId = null, _explainCveId = null;
+
+function openExplainModal(scanId, cveId) {
+  _explainScanId = scanId; _explainCveId = cveId; _explainProvider = 'none';
+  document.getElementById('explain-modal-cve').textContent = cveId;
+  document.getElementById('explain-output').innerHTML = '<span style="color:var(--text-mute)">Click Generate to fetch explanation.</span>';
+  document.getElementById('explain-ollama-options').style.display = 'none';
+  document.querySelectorAll('.explain-provider-btn').forEach(b => b.classList.toggle('active', b.dataset.provider === 'none'));
+  document.getElementById('explain-modal-overlay').classList.add('open');
+  document.getElementById('explain-modal').classList.add('open');
+}
+function closeExplainModal() {
+  document.getElementById('explain-modal-overlay').classList.remove('open');
+  document.getElementById('explain-modal').classList.remove('open');
+}
+function setExplainProvider(provider, el) {
+  _explainProvider = provider;
+  document.querySelectorAll('.explain-provider-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('explain-ollama-options').style.display = provider === 'ollama' ? 'flex' : 'none';
+}
+async function runExplain() {
+  if (!_explainScanId || !_explainCveId) return;
+  const btn = document.getElementById('explain-run-btn');
+  const out = document.getElementById('explain-output');
+  btn.disabled = true;
+  btn.innerHTML = 'Generating…';
+  out.innerHTML = '<span style="color:var(--text-mute)">Contacting API…</span>';
+  const body = { provider: _explainProvider };
+  if (_explainProvider === 'ollama') {
+    const model = document.getElementById('explain-ollama-model').value.trim();
+    if (model) body.model = model;
+  }
+  try {
+    const data = await apiFetch(
+      `/scan/${_explainScanId}/explain/${encodeURIComponent(_explainCveId)}`,
+      { method: 'POST', body: JSON.stringify(body) },
+    );
+    out.textContent = data.explanation || '(no explanation returned)';
+  } catch(e) {
+    out.innerHTML = `<span style="color:var(--red)">Error: ${escHtml(e.message)}</span>`;
+  } finally {
+    btn.disabled = false; btn.innerHTML = 'Generate';
+  }
+}
+
+// ─── Graph modal ───────────────────────────────────────────────────────────
+function openGraphModal(scanId, cveId) {
+  document.getElementById('graph-modal-cve').textContent = cveId;
+  document.getElementById('graph-output').innerHTML = '<div class="spinner" style="margin:3rem auto"></div>';
+  document.getElementById('graph-modal-overlay').classList.add('open');
+  document.getElementById('graph-modal').classList.add('open');
+  _loadGraph(scanId, cveId);
+}
+function closeGraphModal() {
+  document.getElementById('graph-modal-overlay').classList.remove('open');
+  document.getElementById('graph-modal').classList.remove('open');
+}
+async function _loadGraph(scanId, cveId) {
+  const out = document.getElementById('graph-output');
+  try {
+    const data = await apiFetch(`/scan/${encodeURIComponent(scanId)}/graph/${encodeURIComponent(cveId)}`);
+    const graphText = data.call_chain_graph || '';
+    if (!graphText) { out.innerHTML = '<span style="color:var(--text-mute)">No call chain graph available for this CVE.</span>'; return; }
+    const id = 'mermaid-graph-' + Date.now();
+    out.innerHTML = `<div class="mermaid" id="${id}">${escHtml(graphText)}</div>`;
+    try {
+      await mermaid.run({ nodes: [document.getElementById(id)] });
+    } catch(renderErr) {
+      out.innerHTML = `<div style="font-size:0.7rem;color:var(--amber);margin-bottom:0.5rem">Render failed — showing source:</div><pre style="font-size:0.68rem;color:var(--text-dim);white-space:pre-wrap;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:0.85rem">${escHtml(graphText)}</pre>`;
+    }
+  } catch(e) {
+    out.innerHTML = `<span style="color:var(--red)">Failed: ${escHtml(e.message)}</span>`;
   }
 }
 
@@ -1564,10 +1941,17 @@ function toast(msg, type='info') {
 // ─── Helpers ───────────────────────────────────────────────────────────────
 function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
-function expandCves(el, cls) {
+function expandCves(el, cls, scanId, hasGraph) {
   const list = el.parentNode;
   const cves = JSON.parse(list.dataset.cves || '[]');
-  list.innerHTML = cves.map(c => `<span class="${cls}">${escHtml(c)}</span>`).join('');
+  list.innerHTML = cves.map(c => {
+    const safeC = escHtml(c);
+    const explainBtn = `<button class="cve-action-btn" title="Explain ${safeC}" onclick="event.stopPropagation();openExplainModal('${escHtml(scanId)}','${safeC}')">⚡</button>`;
+    const graphBtn   = hasGraph
+      ? `<button class="cve-action-btn graph" title="Call graph" onclick="event.stopPropagation();openGraphModal('${escHtml(scanId)}','${safeC}')">⋯</button>`
+      : '';
+    return `<span class="${cls}">${safeC}</span>${explainBtn}${graphBtn}`;
+  }).join('');
 }
 function truncate(s, n) { return s && s.length > n ? s.slice(0,n)+'…' : (s||'—'); }
 
@@ -1581,3 +1965,21 @@ function fmtDate(iso) {
   if (diff < 86400) return `${Math.round(diff/3600)}h ago`;
   return d.toLocaleDateString();
 }
+
+// ─── Mermaid init ──────────────────────────────────────────────────────────
+if (typeof mermaid !== 'undefined') {
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    themeVariables: {
+      background: '#080c0f',
+      primaryColor: '#0d1318',
+      primaryTextColor: '#c8d8e8',
+      lineColor: '#1a2530',
+    },
+  });
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeExplainModal(); closeGraphModal(); }
+});

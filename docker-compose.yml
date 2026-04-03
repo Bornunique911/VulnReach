@@ -22,6 +22,7 @@ services:
       # Persist scan results and config across restarts
       - ./scans:/app/scans
       - ./config:/app/config
+      - ./libs:/app/libs
     environment:
       - DATABASE_URL=postgresql://vulnreach:vulnreach@db:5432/vulnreach
       # All temp dirs (coverage, patched Dockerfiles, cloned repos) go here.

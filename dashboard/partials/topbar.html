@@ -1,0 +1,31 @@
+  <!-- Top bar (hidden until logged in) -->
+  <header class="topbar" id="topbar" style="display:none">
+    <div class="topbar-left">
+      <button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()">
+        <i class="fas fa-bars"></i>
+      </button>
+      <div class="logo">
+        <div class="logo-icon">VR</div>
+        Vuln<span>Reach</span>&nbsp;<span style="color:var(--text-mute);font-weight:400;font-size:0.85rem">v2</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="status-dot"><div class="dot"></div><span id="api-status">API connected</span></div>
+      <button class="theme-btn" id="theme-btn" onclick="cycleTheme()" title="Toggle theme"></button>
+      <div class="profile-icon" id="profile-icon" onclick="toggleProfileMenu(event)">
+        <i class="fas fa-circle-user"></i>
+        <div class="profile-menu" id="profile-menu">
+          <div class="profile-menu-item profile-menu-user">
+            <i class="fas fa-user"></i> <span id="profile-username">admin</span>
+          </div>
+          <div class="profile-divider"></div>
+          <div class="profile-menu-item" onclick="setPage('settings')">
+            <i class="fas fa-gear"></i> Settings
+          </div>
+          <div class="profile-menu-item" onclick="doLogout()">
+            <i class="fas fa-right-from-bracket"></i> Sign Out
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>

@@ -1,0 +1,31 @@
+<!-- Scan detail panel -->
+<div class="panel-overlay" id="panel-overlay" onclick="closePanel()"></div>
+<div class="detail-panel" id="detail-panel">
+  <div class="panel-header" id="panel-drag-handle">
+    <div class="panel-title" id="panel-title">Scan Detail</div>
+    <div class="panel-actions">
+      <button class="panel-btn" id="panel-csv-btn" onclick="exportCSV(currentScan)" title="Export CSV">
+        <i class="fas fa-file-csv"></i>
+      </button>
+      <button class="panel-btn" id="panel-pdf-btn" onclick="exportPDF(currentScan && currentScan.scan_id)" title="Export PDF">
+        <i class="fas fa-file-pdf"></i>
+      </button>
+      <button class="panel-btn" id="panel-max-btn" onclick="toggleMaxPanel()" title="Maximise">
+        <i class="fas fa-expand"></i>
+      </button>
+      <button class="panel-close" onclick="closePanel()">✕</button>
+    </div>
+  </div>
+  <div class="panel-body">
+    <div class="tab-bar">
+      <div class="tab-item active" onclick="setTab('overview',this)">Overview</div>
+      <div class="tab-item" onclick="setTab('findings',this)">Findings</div>
+      <div class="tab-item" onclick="setTab('fixplan',this)">Fix Plan</div>
+      <div class="tab-item" onclick="setTab('raw',this)">Raw JSON</div>
+    </div>
+    <div id="tab-overview"></div>
+    <div id="tab-findings" style="display:none"></div>
+    <div id="tab-fixplan" style="display:none"></div>
+    <div id="tab-raw" style="display:none"></div>
+  </div>
+</div>

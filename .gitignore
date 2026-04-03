@@ -1,5 +1,7 @@
 # FILES
 .env
+.env.local
+.snyk
 pytest.ini
 TODO-PRIVATE.md
 *.pyc
@@ -8,6 +10,12 @@ TODO-PRIVATE.md
 .DS_Store
 
 # DIRECTORIES
+.claude/
+.hypothesis/
+.idea/
+.pytest_cache/
+.ruff_cache/
+.vscode/
 .venv/
 __pycache__/
 dist/

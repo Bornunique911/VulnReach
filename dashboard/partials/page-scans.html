@@ -1,0 +1,57 @@
+      <!-- Page: Scans -->
+      <div id="page-scans">
+        <div class="page-header">
+          <div>
+            <div class="page-title">Scan History</div>
+            <div class="page-subtitle">All reachability scans — click any row to inspect results</div>
+          </div>
+          <button class="btn-primary" onclick="setPage('new')">+ New Scan</button>
+        </div>
+
+        <!-- Stats -->
+        <div class="stat-grid">
+          <div class="stat-card green">
+            <div class="stat-label">Repositories</div>
+            <div class="stat-value" id="stat-total">—</div>
+            <div class="stat-sub">tracked</div>
+          </div>
+          <div class="stat-card red">
+            <div class="stat-label">Confirmed</div>
+            <div class="stat-value" id="stat-confirmed">—</div>
+            <div class="stat-sub">reachable vulns</div>
+          </div>
+          <div class="stat-card amber">
+            <div class="stat-label">Likely</div>
+            <div class="stat-value" id="stat-likely">—</div>
+            <div class="stat-sub">probable risk</div>
+          </div>
+          <div class="stat-card blue">
+            <div class="stat-label">Running</div>
+            <div class="stat-value" id="stat-running">—</div>
+            <div class="stat-sub">active scans</div>
+          </div>
+        </div>
+
+        <!-- Table -->
+        <div class="section-header">
+          <div class="section-title">Recent Scans</div>
+          <button class="btn-secondary" onclick="loadScans()">↺ Refresh</button>
+        </div>
+
+        <div class="table-card">
+          <div class="table-header">
+            <div>Repository</div>
+            <div>Path / URL</div>
+            <div>Scans</div>
+            <div>Latest Status</div>
+            <div>Last Scan</div>
+            <div></div>
+          </div>
+          <div id="scans-body">
+            <div class="empty-state">
+              <div class="spinner" style="margin:0 auto 1rem"></div>
+              <div class="empty-text">Loading scans…</div>
+            </div>
+          </div>
+        </div>
+      </div>

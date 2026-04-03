@@ -1,0 +1,11 @@
+<!-- Graph modal -->
+<div class="vr-modal-overlay" id="graph-modal-overlay" onclick="closeGraphModal()"></div>
+<div class="vr-modal vr-modal-wide" id="graph-modal">
+  <div class="vr-modal-header">
+    <div class="vr-modal-title">Call Chain: <span id="graph-modal-cve" style="color:var(--green);font-family:var(--mono)"></span></div>
+    <button class="panel-close" onclick="closeGraphModal()">✕</button>
+  </div>
+  <div class="vr-modal-body">
+    <div id="graph-output" class="graph-output"><div class="spinner" style="margin:3rem auto"></div></div>
+  </div>
+</div>

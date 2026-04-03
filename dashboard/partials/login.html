@@ -1,0 +1,20 @@
+  <!-- Login page — shown when not authenticated -->
+  <div id="login-page" class="login-page">
+    <div class="login-card">
+      <div class="logo" style="justify-content:center;margin-bottom:1.5rem">
+        <div class="logo-icon">VR</div>
+        Vuln<span>Reach</span>&nbsp;<span style="color:var(--text-mute);font-weight:400;font-size:0.85rem">v2</span>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Username</label>
+        <input class="form-input" id="login-username" placeholder="admin" autocomplete="username" />
+      </div>
+      <div class="form-group" style="margin-top:0.75rem">
+        <label class="form-label">Password</label>
+        <input class="form-input" id="login-password" type="password" placeholder="password" autocomplete="current-password"
+               onkeydown="if(event.key==='Enter')doLogin()" />
+      </div>
+      <div id="login-error" style="font-size:0.75rem;color:var(--red);margin-top:0.5rem;min-height:1.1em"></div>
+      <button class="btn-primary" style="width:100%;margin-top:0.75rem" onclick="doLogin()">Sign in</button>
+    </div>
+  </div>

@@ -33,7 +33,7 @@ from core.orchestrator import Orchestrator
 from config.schema import load_config, default_config
 from core.models import ScanContext, AgentResult
 from correlation.service import CorrelationService
-from storage.repository import PostgresRepository
+from storage import get_repository
 
 # Load .env.local first (secrets), then .env as fallback
 load_dotenv(dotenv_path=Path(".env.local"), override=True)
@@ -76,7 +76,7 @@ app.add_middleware(
 
 app.add_middleware(_MaxBodySizeMiddleware)
 
-storage = PostgresRepository(os.getenv("DATABASE_URL"))
+storage = get_repository()
 runner = AgentRunner(storage)
 correlation_service = CorrelationService()
 orchestrator = Orchestrator(storage, runner, correlation_service)
@@ -221,12 +221,20 @@ async def create_api_key(body: ApiKeyCreateRequest, principal: UserPrincipal = D
     }
 
 
-@app.delete("/api-keys/{key_id}")
+@app.post("/api-keys/{key_id}/revoke")
 async def revoke_api_key(key_id: str, principal: UserPrincipal = Depends(require_user)):
     revoked = storage.revoke_api_key(key_id, principal.id)
     if not revoked:
-        raise HTTPException(status_code=404, detail="API key not found")
+        raise HTTPException(status_code=404, detail="API key not found or already revoked")
     return {"id": key_id, "revoked": True}
+
+
+@app.delete("/api-keys/{key_id}")
+async def delete_api_key(key_id: str, principal: UserPrincipal = Depends(require_user)):
+    deleted = storage.delete_api_key(key_id, principal.id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="API key not found")
+    return {"id": key_id, "deleted": True}
 
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -377,6 +385,87 @@ async def list_scans(principal: UserPrincipal = Depends(require_user)):
     ]}
 
 
+@app.get("/scan/{scan_id}/fix-plan")
+async def get_fix_plan(scan_id: str, principal: UserPrincipal = Depends(require_user)):
+    """Return a prioritised list of package upgrades that remove reachable CVEs."""
+    scan = _fetch_scan_owned(scan_id, principal)
+    from api.fix_plan import build_fix_plan
+    plan = build_fix_plan(scan)
+    fixable = sum(len(p["reachable_cves_removed"]) for p in plan)
+    return {
+        "scan_id": scan_id,
+        "fix_plan": plan,
+        "summary": {
+            "reachable_cves_fixable": fixable,
+            "packages_to_upgrade": len(plan),
+        },
+    }
+
+
+@app.get("/scan/{scan_id}/graph/{cve_id}")
+async def get_call_graph(scan_id: str, cve_id: str, principal: UserPrincipal = Depends(require_user)):
+    """Return the Mermaid call-chain graph for a specific CVE in a scan."""
+    scan = _fetch_scan_owned(scan_id, principal)
+
+    # Step 1: resolve which package this CVE belongs to via reachability evidence
+    pkg_name = None
+    for ev in scan.get("reachability") or []:
+        if ev.get("cve_id") == cve_id:
+            pkg_name = ev.get("package")
+            break
+    if not pkg_name:
+        for vuln in scan.get("vulnerabilities") or []:
+            if vuln.get("cve_id") == cve_id:
+                pkg_name = vuln.get("package")
+                break
+    if not pkg_name:
+        raise HTTPException(status_code=404, detail=f"No finding for CVE '{cve_id}' in scan '{scan_id}'")
+
+    # Step 2: search raw analyses for the package's call_chain_graph
+    # Python raw: {"vulnerabilities": [{"package_name": ..., "call_chain_graph": ...}]}
+    # Java/multi raw: {"analyses": [{"package_name": ..., "call_chain_graph": ...}]}
+    raw = scan.get("raw") or {}
+    for tool_name in ("python_reachability", "java_reachability", "multi_language_reachability"):
+        payload = raw.get(tool_name) or {}
+        analyses = payload.get("vulnerabilities") or payload.get("analyses") or []
+        for analysis in analyses:
+            if analysis.get("package_name") == pkg_name:
+                graph = analysis.get("call_chain_graph")
+                if graph:
+                    return {
+                        "scan_id": scan_id,
+                        "cve_id": cve_id,
+                        "package": pkg_name,
+                        "call_chain_graph": graph,
+                    }
+    raise HTTPException(status_code=404, detail=f"No call graph found for CVE '{cve_id}'")
+
+
+class ExplainRequest(BaseModel):
+    provider: str = "none"
+    model: str | None = None
+
+
+@app.post("/scan/{scan_id}/explain/{cve_id}")
+async def explain_finding(
+    scan_id: str,
+    cve_id: str,
+    body: ExplainRequest,
+    principal: UserPrincipal = Depends(require_user),
+):
+    """Return a human-readable explanation for a CVE finding.
+
+    provider=none (default) returns an offline structured summary.
+    provider=anthropic calls the configured Anthropic LLM.
+    provider=ollama calls the Ollama instance at VULNREACH_OLLAMA_URL (server-side config only).
+    """
+    scan = _fetch_scan_owned(scan_id, principal)
+    ollama_url = os.getenv("VULNREACH_OLLAMA_URL", "http://host.docker.internal:11434")
+    from api.explain import build_explanation
+    explanation = build_explanation(scan, cve_id, provider=body.provider, model=body.model, ollama_url=ollama_url)
+    return {"scan_id": scan_id, "cve_id": cve_id, "explanation": explanation}
+
+
 @app.get("/scan/{scan_id}/export/pdf")
 async def export_scan_pdf(scan_id: str, principal: UserPrincipal = Depends(require_user)):
     """Generate and download a PDF report for a scan."""
@@ -401,5 +490,5 @@ async def health():
 
 
 @app.get("/tools")
-async def list_tools():
+async def list_tools(principal: UserPrincipal = Depends(require_user)):
     return {"available_tools": AVAILABLE_TOOLS}

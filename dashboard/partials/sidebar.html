@@ -1,0 +1,51 @@
+    <!-- Sidebar -->
+    <nav class="sidebar" id="sidebar">
+      <div class="sidebar-collapse-btn" onclick="toggleSidebar()" title="Collapse sidebar">
+        <i class="fas fa-chevron-left"></i>
+      </div>
+      <div class="nav-section">
+        <div class="nav-label">Analysis</div>
+        <div class="nav-item active" onclick="setPage('scans')">
+          <span class="nav-icon"><i class="fas fa-shield-halved"></i></span>
+          <span class="nav-text">Scans</span>
+          <span class="badge" id="nav-count">—</span>
+        </div>
+        <div class="nav-item" onclick="setPage('inventory')">
+          <span class="nav-icon"><i class="fas fa-warehouse"></i></span>
+          <span class="nav-text">Inventory</span>
+        </div>
+        <div class="nav-item" onclick="setPage('new')">
+          <span class="nav-icon"><i class="fas fa-plus"></i></span>
+          <span class="nav-text">New Scan</span>
+        </div>
+        <div class="nav-item" onclick="setPage('findings')">
+          <span class="nav-icon"><i class="fas fa-bug"></i></span>
+          <span class="nav-text">Findings</span>
+        </div>
+      </div>
+      <div class="nav-section">
+        <div class="nav-label">Platform</div>
+        <div class="nav-item" onclick="setPage('tools')">
+          <span class="nav-icon"><i class="fas fa-toolbox"></i></span>
+          <span class="nav-text">Tools</span>
+        </div>
+        <div class="nav-item" onclick="setPage('api')">
+          <span class="nav-icon"><i class="fas fa-key"></i></span>
+          <span class="nav-text">API Access</span>
+        </div>
+        <div class="nav-item" onclick="setPage('config')">
+          <span class="nav-icon"><i class="fas fa-sliders"></i></span>
+          <span class="nav-text">Config</span>
+        </div>
+        <div class="nav-item" onclick="setPage('settings')">
+          <span class="nav-icon"><i class="fas fa-gear"></i></span>
+          <span class="nav-text">Settings</span>
+        </div>
+      </div>
+      <div class="nav-section sidebar-bottom">
+        <div class="nav-item signout-item" onclick="doLogout()">
+          <span class="nav-icon"><i class="fas fa-right-from-bracket"></i></span>
+          <span class="nav-text">Sign Out</span>
+        </div>
+      </div>
+    </nav>

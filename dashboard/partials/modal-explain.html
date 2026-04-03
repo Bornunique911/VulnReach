@@ -1,0 +1,21 @@
+<!-- Explain modal -->
+<div class="vr-modal-overlay" id="explain-modal-overlay" onclick="closeExplainModal()"></div>
+<div class="vr-modal" id="explain-modal">
+  <div class="vr-modal-header">
+    <div class="vr-modal-title"><span style="color:var(--amber)">⚡</span> Explain: <span id="explain-modal-cve" style="color:var(--green);font-family:var(--mono)"></span></div>
+    <button class="panel-close" onclick="closeExplainModal()">✕</button>
+  </div>
+  <div class="vr-modal-body">
+    <div class="explain-provider-bar">
+      <button class="explain-provider-btn active" data-provider="none"      onclick="setExplainProvider('none',this)">Offline</button>
+      <button class="explain-provider-btn"         data-provider="anthropic" onclick="setExplainProvider('anthropic',this)">Claude</button>
+      <button class="explain-provider-btn"         data-provider="ollama"    onclick="setExplainProvider('ollama',this)">Ollama</button>
+    </div>
+    <div id="explain-ollama-options" style="display:none;margin-bottom:0.75rem;gap:0.5rem;align-items:center">
+      <input class="form-input" id="explain-ollama-model" placeholder="Model (e.g. qwen2.5-coder:7b)" style="width:260px;font-size:0.75rem;padding:0.35rem 0.6rem"/>
+      <span style="font-size:0.65rem;color:var(--text-mute)">Ollama URL is configured via <code>VULNREACH_OLLAMA_URL</code> on the server</span>
+    </div>
+    <button class="btn-primary" id="explain-run-btn" style="margin-bottom:1rem;padding:0.4rem 1rem;font-size:0.75rem" onclick="runExplain()">Generate</button>
+    <div id="explain-output" class="explain-output"><span style="color:var(--text-mute)">Click Generate to fetch explanation.</span></div>
+  </div>
+</div>

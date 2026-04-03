@@ -723,6 +723,15 @@ class PostgresRepository(StorageRepository):
                 )
                 return cur.rowcount > 0
 
+    def delete_api_key(self, key_id: str, user_id: str) -> bool:
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM api_keys WHERE id = %s AND user_id = %s",
+                    (key_id, user_id),
+                )
+                return cur.rowcount > 0
+
     def _convert_correlation(self, row: Dict[str, Any]) -> Dict[str, Any]:
         risk_score = row.get("risk_score")
         if risk_score is not None:

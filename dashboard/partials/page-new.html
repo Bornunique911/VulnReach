@@ -1,0 +1,44 @@
+      <!-- Page: New Scan -->
+      <div id="page-new" style="display:none">
+        <div class="page-header">
+          <div>
+            <div class="page-title">New Scan</div>
+            <div class="page-subtitle">Configure and launch a reachability scan</div>
+          </div>
+        </div>
+
+        <div class="scan-form-card">
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">Repository Path (local)</label>
+              <input class="form-input" id="f-repo-path" placeholder="/home/user/myapp" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Repository URL (remote)</label>
+              <input class="form-input" id="f-repo-url" placeholder="https://github.com/org/repo" />
+            </div>
+            <div class="form-group full">
+              <label class="form-label">Config Path <span style="color:var(--text-mute);font-weight:400">(optional when using a URL — auto-discovered or default used)</span></label>
+              <input class="form-input" id="f-config-path" placeholder="/home/user/myapp/vulnreach.yaml" />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Tools</label>
+            <div class="tools-grid" id="tool-chips"></div>
+          </div>
+
+          <div class="form-actions">
+            <button class="btn-primary" id="launch-btn" onclick="launchScan()">
+              ▶ Launch Scan
+            </button>
+            <button class="btn-secondary" onclick="resetForm()">Reset</button>
+            <div class="form-hint" id="form-hint"></div>
+          </div>
+
+          <div id="launch-progress" style="display:none">
+            <div class="progress-bar-wrap"><div class="progress-bar" id="progress-fill" style="width:0%"></div></div>
+            <div style="font-size:0.7rem;color:var(--text-dim);margin-top:0.4rem" id="progress-label">Initialising…</div>
+          </div>
+        </div>
+      </div>

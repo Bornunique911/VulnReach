@@ -789,6 +789,7 @@ body::after {
 .scan-menu-item.disabled { color: var(--text-mute); cursor: not-allowed; opacity: 0.45; }
 .scan-menu-item.danger { color: var(--red); }
 .scan-menu-item.danger:hover { background: var(--red-dim); }
+.key-menu-btn { font-size: 1rem; line-height: 1; padding: 0.1rem 0.4rem; }
 
 /* ── Scan detail panel (slide-in) ── */
 .panel-overlay {
@@ -1546,3 +1547,157 @@ body::after {
   color: var(--text-dim);
   line-height: 1.6;
 }
+
+/* ── Inventory page ── */
+.inventory-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 1rem;
+}
+
+.inv-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.1rem;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.inv-card:hover {
+  border-color: var(--border-hi);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+}
+
+.inv-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.inv-repo-name {
+  font-family: var(--sans);
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inv-path {
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inv-stats {
+  display: flex;
+  gap: 1.25rem;
+  margin-top: 0.1rem;
+}
+
+.inv-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+}
+
+.inv-stat-val {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text);
+  font-family: var(--sans);
+}
+
+.inv-stat-key {
+  font-size: 0.58rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-mute);
+}
+
+.inv-sev-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.inv-sev-chip {
+  font-size: 0.65rem;
+  font-weight: 700;
+  font-family: var(--mono);
+}
+
+.inv-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  min-height: 1.4rem;
+}
+
+.inv-tool-chip {
+  font-size: 0.6rem;
+  font-family: var(--mono);
+  color: var(--text-mute);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.15rem 0.4rem;
+}
+
+.inv-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+  justify-content: flex-end;
+}
+
+/* ── VR Modal base ── */
+.vr-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:400;opacity:0;pointer-events:none;transition:opacity .2s}
+.vr-modal-overlay.open{opacity:1;pointer-events:all}
+.vr-modal{position:fixed;top:50%;left:50%;transform:translate(-50%,-48%) scale(.97);width:min(680px,94vw);max-height:80vh;background:var(--surface);border:1px solid var(--border-hi);border-radius:10px;box-shadow:0 24px 64px rgba(0,0,0,.55);z-index:401;display:flex;flex-direction:column;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s}
+.vr-modal.open{opacity:1;pointer-events:all;transform:translate(-50%,-50%) scale(1)}
+.vr-modal-wide{width:min(900px,96vw)}
+.vr-modal-header{display:flex;align-items:center;justify-content:space-between;padding:1rem 1.25rem;border-bottom:1px solid var(--border);flex-shrink:0}
+.vr-modal-title{font-family:var(--sans);font-weight:700;font-size:.95rem;color:var(--text);display:flex;align-items:center;gap:.5rem}
+.vr-modal-body{padding:1.25rem;overflow-y:auto;flex:1}
+
+/* ── Explain modal ── */
+.explain-provider-bar{display:flex;gap:.3rem;margin-bottom:.85rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:.25rem;width:fit-content}
+.explain-provider-btn{font-family:var(--mono);font-size:.72rem;padding:.3rem .85rem;border:none;border-radius:4px;background:transparent;color:var(--text-dim);cursor:pointer;transition:all .15s}
+.explain-provider-btn:hover{color:var(--text)}
+.explain-provider-btn.active{background:var(--green-dim);color:var(--green);border:1px solid #00e5a040}
+.explain-output{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:1rem 1.1rem;font-size:.78rem;line-height:1.8;color:var(--text-dim);white-space:pre-wrap;word-break:break-word;min-height:120px;font-family:var(--mono)}
+
+/* ── Graph modal ── */
+.graph-output{min-height:200px;display:flex;align-items:center;justify-content:center}
+.graph-output svg{max-width:100%;height:auto}
+
+/* ── CVE action buttons ── */
+.cve-action-btn{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1px solid var(--border);border-radius:3px;background:transparent;color:var(--text-mute);cursor:pointer;font-size:.6rem;line-height:1;transition:all .12s;vertical-align:middle;margin-left:2px}
+.cve-action-btn:hover{border-color:var(--amber);color:var(--amber);background:var(--amber-dim)}
+.cve-action-btn.graph:hover{border-color:var(--blue);color:var(--blue);background:var(--blue-dim)}
+
+/* ── Fix Plan tab ── */
+.fixplan-summary{display:flex;gap:1.5rem;padding:.75rem 1rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:1.25rem}
+.fixplan-summary-item{display:flex;flex-direction:column;gap:.15rem}
+.fixplan-summary-key{font-size:.6rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-mute)}
+.fixplan-summary-val{font-weight:700;font-size:1.05rem;font-family:var(--sans);color:var(--green)}
+.fixplan-card{border:1px solid var(--border);border-radius:8px;padding:.9rem 1rem;margin-bottom:.6rem;transition:border-color .15s}
+.fixplan-card:hover{border-color:var(--border-hi)}
+.fixplan-card.dynamic{border-left:3px solid var(--red)}
+.fixplan-card.static{border-left:3px solid var(--amber)}
+.fixplan-card-top{display:flex;align-items:center;gap:.75rem;margin-bottom:.6rem}
+.fixplan-pkg-name{font-weight:700;font-size:.9rem;color:var(--text)}
+.fixplan-upgrade{display:flex;align-items:center;gap:.4rem;font-size:.72rem;font-family:var(--mono);color:var(--text-dim);margin-bottom:.45rem}
+.fixplan-upgrade .cur{color:var(--red)}.fixplan-upgrade .arr{color:var(--text-mute)}.fixplan-upgrade .next{color:var(--green)}
+.fixplan-cves{display:flex;flex-wrap:wrap;gap:.25rem;margin-bottom:.3rem}
+.fixplan-cve-label{font-size:.58rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-mute);margin-bottom:.2rem}

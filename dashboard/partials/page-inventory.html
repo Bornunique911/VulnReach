@@ -1,0 +1,19 @@
+      <!-- Page: Inventory -->
+      <div id="page-inventory" style="display:none">
+        <div class="page-header">
+          <div>
+            <div class="page-title">Inventory</div>
+            <div class="page-subtitle">All onboarded repositories — one card per unique repo</div>
+          </div>
+          <div style="display:flex;gap:0.5rem">
+            <button class="btn-secondary" onclick="exportInventoryCSV()"><i class="fas fa-download" style="margin-right:0.4rem"></i>Export CSV</button>
+            <button class="btn-primary" onclick="setPage('new')">+ New Scan</button>
+          </div>
+        </div>
+        <div id="inventory-grid" class="inventory-grid">
+          <div class="empty-state">
+            <div class="spinner" style="margin:0 auto 1rem"></div>
+            <div class="empty-text">Loading inventory…</div>
+          </div>
+        </div>
+      </div>
