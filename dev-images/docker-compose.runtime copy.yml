@@ -1,0 +1,46 @@
+services:
+  vulnreach:
+    # Explicitly opt in to dynamic scans and route Docker API calls through
+    # a restricted socket proxy service.
+    # Use with:
+    #   docker compose -f docker-compose.yml -f dev-images/docker-compose.runtime.yml up --build
+    environment:
+      - VULNREACH_ALLOW_DOCKER_DAEMON=true
+      - DOCKER_HOST=tcp://docker-socket-proxy:2375
+    depends_on:
+      docker-socket-proxy:
+        condition: service_started
+
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    environment:
+      # Allow mutating Docker calls (build/run/stop/rm); without this
+      # all unsafe verbs are blocked.
+      - POST=1
+      # Minimum API groups needed by dynamic reachability workflows.
+      - BUILD=1
+      - CONTAINERS=1
+      - EXEC=1
+      - IMAGES=1
+      - INFO=1
+      - NETWORKS=1
+      - PING=1
+      - SESSION=1
+      - VERSION=1
+      - VOLUMES=1
+      # Explicitly disable unrelated surfaces.
+      - AUTH=0
+      - COMMIT=0
+      - CONFIGS=0
+      - DISTRIBUTION=0
+      - EVENTS=0
+      - NODES=0
+      - PLUGINS=0
+      - SECRETS=0
+      - SERVICES=0
+      - SWARM=0
+      - SYSTEM=0
+      - TASKS=0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
