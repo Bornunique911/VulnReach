@@ -17,6 +17,7 @@ class ScanContext:
     import_map: Dict[str, str] = field(default_factory=dict)
     taint_flows: List[Dict[str, Any]] = field(default_factory=list)
     routes: List[Dict[str, Any]] = field(default_factory=list)
+    detected_languages: List[str] = field(default_factory=list)
 
 
 class VulnerabilityFinding(BaseModel):

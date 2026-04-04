@@ -2,12 +2,21 @@ scan:
   static_reachability: true
   tools:
     - git
-    - trivy                      # SCA via pom.xml / build.gradle
-    - multi_language_reachability # Python/Java/JS/Go/C#/PHP static reachability
-    - route_extractor             # static rules 
+    - trivy
+    - tainter
+    - multi_language_reachability
+    - route_extractor
+    - metadata
+    - semgrep
+    - dynamic_reachability
 
   runtime:
-    enabled: false               # dynamic requires Dockerfile + Python runtime
+    enabled: true
+    timeout: 180
+    coverage_wait: 15
+    container_port: 3000
+    ebpf:
+      enabled: false
 
   openapi_generator:
     enabled: false

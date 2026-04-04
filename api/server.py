@@ -108,6 +108,26 @@ _active_scans: Dict[str, "asyncio.Task[None]"] = {}
 
 # ── Seed admin user on startup ───────────────────────────────────
 
+def _log_runtime_docker_configuration() -> None:
+    allow_dynamic = (os.getenv("VULNREACH_ALLOW_DOCKER_DAEMON", "") or "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    docker_host = (os.getenv("DOCKER_HOST", "") or "").strip()
+
+    if allow_dynamic and not docker_host:
+        logger.warning(
+            "Dynamic Docker scans are enabled but DOCKER_HOST is not set. "
+            "Docker CLI will fall back to /var/run/docker.sock and compose-mode runtime scans will fail in the container."
+        )
+        return
+
+    if allow_dynamic:
+        logger.info("Dynamic Docker scans enabled via DOCKER_HOST=%s", docker_host)
+        return
+
+    if docker_host:
+        logger.info("DOCKER_HOST is set (%s) but dynamic Docker scans are not enabled", docker_host)
+
 def _seed_admin() -> None:
     username = os.getenv("SEED_ADMIN_USERNAME")
     password = os.getenv("SEED_ADMIN_PASSWORD")
@@ -128,6 +148,7 @@ def _seed_admin() -> None:
 
 @app.on_event("startup")
 async def on_startup() -> None:
+    _log_runtime_docker_configuration()
     _seed_admin()
 
 
@@ -280,7 +301,8 @@ async def start_scan(
     logger.info("[scan] request: repo_path=%r repo_url=%r config_path=%r", repo_path, repo_url, config_path)
     if not repo_path and not repo_url:
         raise HTTPException(status_code=400, detail="repo_path or repo_url is required")
-    # config_path is optional when repo_url is provided (default config used, or auto-discovered post-clone)
+    # config_path is optional when repo_url is provided.
+    # Without it, the cloned repository must provide vulnreach.yaml at repo root.
     if not config_path and not repo_url:
         raise HTTPException(status_code=400, detail="config_path is required for local repo scans")
 

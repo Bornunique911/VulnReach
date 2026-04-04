@@ -15,7 +15,7 @@ Status legend:
   - Runtime override file isolates high-privilege mode.
 - [x] eBPF explicit opt-in (`VULNREACH_ALLOW_EBPF=true`).
 - [~] Command execution hardening audit for all subprocess paths.
-- [x] Docker socket proxy profile (`dev-images/docker-compose.runtime.yml`) for dynamic mode isolation.
+- [x] Docker socket proxy profile (`docker-compose.runtime.yml`) for dynamic mode isolation.
 
 ## P0 Correctness and Determinism
 

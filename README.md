@@ -89,7 +89,7 @@ $EDITOR .env.local
 docker compose up --build
 
 # Optional: enable dynamic runtime scans (Docker daemon access via restricted socket proxy)
-# docker compose -f docker-compose.yml -f dev-images/docker-compose.runtime.yml up --build
+# docker compose -f docker-compose.yml -f docker-compose.runtime.yml up --build
 ```
 
 ### Run a scan

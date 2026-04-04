@@ -6,6 +6,7 @@ from core.models import AgentResult, ScanContext
 from pydantic import ValidationError
 
 from storage.repository import StorageRepository
+from .reachability.multi_language_analyzer import ProjectLanguageDetector
 
 from .agent_git import GitAgent
 from .agent_trivy import TrivyAgent
@@ -55,14 +56,18 @@ class AgentRunner:
 
         # ── Stage 1: Git clone (sequential prerequisite) ────────────────
         if "git" in tools and context.repo_url:
-            results.append(
-                await self._run_and_persist(
-                    context,
-                    self.git,
-                    self._persist_git,
-                    error_event="agent_skipped",
-                )
+            git_result = await self._run_and_persist(
+                context,
+                self.git,
+                self._persist_git,
+                error_event="agent_skipped",
             )
+            results.append(git_result)
+            if git_result.metadata.get("fatal") or git_result.metadata.get("error"):
+                return results
+
+        detected_languages = self._detect_project_languages(context)
+        python_only_repo = self._is_python_only_repo(detected_languages)
 
         # ── Stage 2: Trivy + Metadata prerequisites (sequential) ────────
         if "trivy" in tools:
@@ -88,8 +93,18 @@ class AgentRunner:
         # ── Stage 3: Static/supplemental analysis (parallel) ─────────────
         # Safe to parallelize: all agents consume the same immutable repo/vuln
         # snapshot, and context updates are applied after each agent completes.
+        if "tainter" in tools and not python_only_repo:
+            results.append(
+                self._persist_skipped(
+                    context,
+                    self.tainter.tool_name,
+                    self._persist_tainter,
+                    "python_only_runtime_and_taint",
+                    detected_languages,
+                )
+            )
+
         static_stage_map: Dict[str, _StageEntry] = {
-            "tainter": (self.tainter, self._persist_tainter, "agent_skipped"),
             "python_reachability": (
                 self.python_reachability,
                 self._persist_python_reachability,
@@ -112,6 +127,8 @@ class AgentRunner:
                 "agent_skipped",
             ),
         }
+        if python_only_repo:
+            static_stage_map["tainter"] = (self.tainter, self._persist_tainter, "agent_skipped")
         static_entries = self._stage_entries_from_tools(tools, static_stage_map)
         if static_entries:
             results.extend(await self._run_parallel_stage(context, static_entries))
@@ -130,13 +147,26 @@ class AgentRunner:
         # ── Stage 5: Runtime stage (parallel) ─────────────────────────────
         runtime_entries: List[_StageEntry] = []
         if context.config and context.config.scan.runtime.enabled:
+            # Dynamic reachability is Docker-based and language-agnostic.
+            # Run for any project with runtime enabled, not just Python-only repos.
             runtime_entries.append(
                 (self.dynamic_reachability, self._persist_dynamic_reachability, "agent_error")
             )
         if "pytest_coverage" in tools:
-            runtime_entries.append(
-                (self.pytest_coverage, self._persist_pytest_coverage, "agent_skipped")
-            )
+            if python_only_repo:
+                runtime_entries.append(
+                    (self.pytest_coverage, self._persist_pytest_coverage, "agent_skipped")
+                )
+            else:
+                results.append(
+                    self._persist_skipped(
+                        context,
+                        self.pytest_coverage.tool_name,
+                        self._persist_pytest_coverage,
+                        "python_only_runtime_and_taint",
+                        detected_languages,
+                    )
+                )
         if runtime_entries:
             results.extend(await self._run_parallel_stage(context, runtime_entries))
 
@@ -152,6 +182,53 @@ class AgentRunner:
             )
 
         return results
+
+    def _detect_project_languages(self, context: ScanContext) -> List[str]:
+        if context.detected_languages:
+            return list(context.detected_languages)
+        if not context.repo_path:
+            return []
+        try:
+            context.detected_languages = ProjectLanguageDetector(context.repo_path).detect_languages()
+        except Exception as exc:  # pragma: no cover - detector is best effort
+            logger.warning(
+                "language_detection_failed",
+                extra={"scan_id": context.scan_id, "repo_path": context.repo_path, "details": str(exc)},
+            )
+            context.detected_languages = []
+        return list(context.detected_languages)
+
+    def _is_python_only_repo(self, detected_languages: Sequence[str]) -> bool:
+        return list(detected_languages) == ["python"]
+
+    def _persist_skipped(
+        self,
+        context: ScanContext,
+        tool_name: str,
+        persist: Callable[[ScanContext, AgentResult], None],
+        reason: str,
+        detected_languages: Sequence[str],
+    ) -> AgentResult:
+        result = AgentResult(
+            tool_name=tool_name,
+            findings=[],
+            metadata={
+                "status": "skipped",
+                "reason": reason,
+                "detected_languages": list(detected_languages),
+            },
+        )
+        persist(context, result)
+        logger.info(
+            "agent_skipped_by_language_gate",
+            extra={
+                "scan_id": context.scan_id,
+                "agent": tool_name,
+                "reason": reason,
+                "detected_languages": list(detected_languages),
+            },
+        )
+        return result
 
     async def _run_parallel_stage(
         self,

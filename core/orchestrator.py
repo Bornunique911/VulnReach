@@ -96,6 +96,7 @@ class Orchestrator:
 
         # Identify tools that failed — warn and continue with partial data
         failed_tools = [r.tool_name for r in results if r.metadata.get("error")]
+        fatal_tools = [r.tool_name for r in results if r.metadata.get("fatal")]
         if failed_tools:
             logger.warning(
                 "scan_partial_tools_skipped",
@@ -320,6 +321,8 @@ class Orchestrator:
 
         if correlation_output["pipeline_status"] == "BLOCK":
             status = "blocked"
+        elif fatal_tools:
+            status = "failed"
         elif failed_tools:
             status = "partial"
         else:
@@ -332,5 +335,6 @@ class Orchestrator:
                 "status": status,
                 "pipeline_status": correlation_output["pipeline_status"],
                 "failed_tools": failed_tools,
+                "fatal_tools": fatal_tools,
             },
         )

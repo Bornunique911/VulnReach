@@ -462,10 +462,10 @@ class PostgresRepository(StorageRepository):
                 scan_id,
                 item.get("check_id"),
                 item.get("path"),
-                item.get("start"),
-                item.get("end"),
+                Json(item["start"]) if isinstance(item.get("start"), dict) else item.get("start"),
+                Json(item["end"]) if isinstance(item.get("end"), dict) else item.get("end"),
                 item.get("severity"),
-                item.get("extra"),
+                Json(item["extra"]) if isinstance(item.get("extra"), dict) else item.get("extra"),
             )
             for item in findings
         ]
