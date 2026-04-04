@@ -53,7 +53,7 @@ The API is available at `http://localhost:8000`. Interactive docs at `http://loc
 Dynamic scans require Docker-daemon access and are disabled by default in the base compose file.
 
 ```bash
-docker compose -f docker-compose.yml -f dev-images/docker-compose.runtime.yml up --build
+docker compose -f docker-compose.yml -f docker-compose.runtime.yml up --build
 ```
 
 This enables:
@@ -182,7 +182,7 @@ location / {
 ### Docker socket security
 
 Base `docker-compose.yml` does **not** mount `/var/run/docker.sock`.
-Dynamic mode is intentionally opt-in via `dev-images/docker-compose.runtime.yml`, which routes Docker API calls through `tecnativa/docker-socket-proxy` and restricts exposed API groups.
+Dynamic mode is intentionally opt-in via `docker-compose.runtime.yml`, which routes Docker API calls through `tecnativa/docker-socket-proxy` and restricts exposed API groups.
 
 If you enable dynamic mode, recommendations:
 

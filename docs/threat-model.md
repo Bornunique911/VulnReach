@@ -112,7 +112,7 @@ Out of scope:
 
 - Keep `scan.runtime.enabled: false` by default.
 - Use base `docker-compose.yml` for least privilege.
-- Enable dynamic only with `dev-images/docker-compose.runtime.yml` in isolated environments.
+- Enable dynamic only with `docker-compose.runtime.yml` in isolated environments.
 - Rotate JWT secret and admin bootstrap credentials.
 - Restrict `CORS_ORIGINS` in production.
 

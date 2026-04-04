@@ -48,7 +48,7 @@ docker compose up --build
 
 ### 3.2 Startup with dynamic runtime profile
 ```bash
-docker compose -f docker-compose.yml -f dev-images/docker-compose.runtime.yml up --build
+docker compose -f docker-compose.yml -f docker-compose.runtime.yml up --build
 ```
 
 Use this only when you need dynamic runtime scanning.

@@ -11,7 +11,7 @@ from core.models import AgentResult, ScanContext
 
 logger = logging.getLogger(__name__)
 
-# Config filenames to look for inside the cloned repo, in priority order
+# Config filenames to look for inside the cloned repo, in priority order.
 _CONFIG_CANDIDATES = ["vulnreach.yaml", "vulnreach.yml", "scan.yml", "scan.yaml"]
 
 # When running inside Docker (DooD) all temp dirs must live under the bind-mounted
@@ -49,20 +49,6 @@ class GitAgent(BaseAgent):
         context.repo_path = str(target_dir)
         context.repo_name = repo_name
 
-        # Auto-discover a vulnreach config inside the cloned repo.
-        # Overrides the default config set by the API when no config_path was given.
-        for candidate in _CONFIG_CANDIDATES:
-            candidate_path = target_dir / candidate
-            if candidate_path.exists():
-                try:
-                    from config.schema import load_config
-                    context.config = load_config(str(candidate_path))
-                    context.config_path = str(candidate_path)
-                    logger.info(f"[git] Auto-discovered config: {candidate_path}")
-                    break
-                except Exception as exc:
-                    logger.warning(f"[git] Found {candidate_path} but failed to load: {exc}")
-
         clone_metadata = {
             "repo_url": context.repo_url,
             "repo_name": repo_name,
@@ -70,6 +56,31 @@ class GitAgent(BaseAgent):
             "commit": commit,
             "scan_id": context.scan_id,
         }
+
+        if context.config_path:
+            clone_metadata["config_source"] = "request"
+            clone_metadata["config_path"] = context.config_path
+            logger.info(f"[git] Using caller-provided config: {context.config_path}")
+            return AgentResult(tool_name=self.tool_name, findings=[clone_metadata], metadata={"raw": clone_metadata})
+
+        # Auto-discover a vulnreach config inside the cloned repo.
+        # Overrides the default config set by the API when no config_path was given.
+        for candidate in _CONFIG_CANDIDATES:
+            candidate_path = target_dir / candidate
+            if candidate_path.exists():
+                try:
+                    from config.schema import load_config
+
+                    context.config = load_config(str(candidate_path))
+                    context.config_path = str(candidate_path)
+                    clone_metadata["config_source"] = "repository"
+                    clone_metadata["config_path"] = str(candidate_path)
+                    logger.info(f"[git] Auto-discovered config: {candidate_path}")
+                    break
+                except Exception as exc:
+                    logger.warning(f"[git] Found {candidate_path} but failed to load: {exc}")
+        else:
+            logger.info(f"[git] No repo config found in {target_dir}; using default config")
 
         return AgentResult(tool_name=self.tool_name, findings=[clone_metadata], metadata={"raw": clone_metadata})
 

@@ -32,6 +32,7 @@ def extract_routes(project_root: str) -> List[Route]:
         for name in files:
             if name.endswith(".py"):
                 routes.extend(_parse_python_routes(os.path.join(root, name), project_root))
+                routes.extend(_parse_django_routes(os.path.join(root, name), project_root))
             elif name.endswith(".js"):
                 routes.extend(_parse_express_routes(os.path.join(root, name), project_root))
             elif name.endswith(".java"):
@@ -224,6 +225,119 @@ def _spring_extract_path(params: str) -> Optional[str]:
     if not path_match:
         path_match = re.search(r"value\s*=\s*\{?['\"]([^'\"}]+)", params)
     return path_match.group(1) if path_match else None
+
+
+# ------------------ Python: Django ------------------
+
+def _clean_django_path(pattern: str) -> str:
+    """Normalise a Django URL pattern string to a display path."""
+    clean = pattern.lstrip("^").rstrip("$")
+    # Convert Django 2+ angle-bracket converters: <int:pk> → {pk}
+    clean = re.sub(r"<\w+:(\w+)>", r"{\1}", clean)
+    clean = re.sub(r"<(\w+)>", r"{\1}", clean)
+    # Convert regex named groups: (?P<pk>\d+) → {pk}
+    clean = re.sub(r"\(\?P<(\w+)>[^)]+\)", r"{\1}", clean)
+    # Strip trailing regex quantifiers that aren't path separators
+    clean = re.sub(r"(?<!/)[+*?]", "", clean)
+    if not clean.startswith("/"):
+        clean = "/" + clean
+    return clean
+
+
+def _parse_django_routes(path: str, project_root: str) -> List[Route]:
+    """Parse Django URL patterns from urls.py / url conf files.
+
+    Handles:
+      - path('route/', view)          – Django 2+ ``path``
+      - re_path(r'^route/', view)     – Django 2+ ``re_path``
+      - url(r'^route/', view)         – Django 1.x ``url``
+      - router.register(r'prefix', …) – DRF DefaultRouter / SimpleRouter
+      - @api_view(['GET', 'POST'])     – DRF function-based view decorator
+    """
+    routes: List[Route] = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+            content = fh.read()
+    except OSError:
+        return routes
+
+    # Quick pre-filter: skip files with no Django URL signals
+    if not any(
+        tok in content
+        for tok in ("urlpatterns", "router.register", "api_view", "re_path", "include(")
+    ):
+        return routes
+
+    lines = content.splitlines()
+
+    # ── path() / re_path() / url() ─────────────────────────────────────────
+    url_re = re.compile(
+        r"(?:^|[(\[,])\s*(?:path|re_path|url)\s*\(\s*r?['\"]([^'\"]*)['\"]",
+        re.MULTILINE,
+    )
+    for m in url_re.finditer(content):
+        raw = m.group(1)
+        # Skip include() redirects (they contain no view handler themselves)
+        # and empty paths handled by include()
+        clean = _clean_django_path(raw)
+        routes.append(
+            Route(
+                method="GET",
+                path=clean,
+                handler=None,
+                file=_rel(path, project_root),
+                framework="django",
+            )
+        )
+
+    # ── DRF router.register() ──────────────────────────────────────────────
+    router_re = re.compile(
+        r"router\.register\s*\(\s*r?['\"]([^'\"]*)['\"]",
+        re.IGNORECASE,
+    )
+    for m in router_re.finditer(content):
+        prefix = _clean_django_path(m.group(1))
+        routes.append(
+            Route(
+                method="GET",
+                path=prefix.rstrip("/") + "/",
+                handler=None,
+                file=_rel(path, project_root),
+                framework="django-rest",
+            )
+        )
+
+    # ── @api_view decorator ────────────────────────────────────────────────
+    api_view_re = re.compile(r"@api_view\s*\(\s*\[([^\]]+)\]\s*\)")
+    pending: List[str] = []
+    for line in lines:
+        av_m = api_view_re.search(line)
+        if av_m:
+            raw_methods = av_m.group(1)
+            pending = [
+                m.strip().strip("'\" ").upper()
+                for m in raw_methods.split(",")
+                if m.strip().strip("'\" ").upper() in SUPPORTED_METHODS
+            ]
+            continue
+        if pending:
+            func_m = re.match(r"def\s+(\w+)\s*\(", line.strip())
+            if func_m:
+                for method in pending:
+                    routes.append(
+                        Route(
+                            method=method,
+                            path="/",
+                            handler=func_m.group(1),
+                            file=_rel(path, project_root),
+                            framework="django-rest",
+                        )
+                    )
+                pending = []
+            elif line.strip():
+                pending = []
+
+    return routes
 
 
 class RouteExtractorAgent(BaseTool):

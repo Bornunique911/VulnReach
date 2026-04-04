@@ -9,6 +9,7 @@ description = "Vulnerability reachability scanner — proves which CVEs are actu
 requires-python = ">=3.11"
 dependencies = [
     "click>=8.0",
+    "packaging>=21",
     "requests>=2.32",
     "rich>=13",
     "pyyaml>=6",
@@ -35,4 +36,13 @@ full = [
 vulnreach = "vulnreach.cli.main:cli"
 
 [tool.setuptools.packages.find]
-include = ["vulnreach*"]
+include = [
+    "agents*",
+    "api*",
+    "config*",
+    "core*",
+    "correlation*",
+    "intelligent_dast*",
+    "storage*",
+    "vulnreach*",
+]

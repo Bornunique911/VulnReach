@@ -3,7 +3,7 @@ services:
     # Explicitly opt in to dynamic scans and route Docker API calls through
     # a restricted socket proxy service.
     # Use with:
-    #   docker compose -f docker-compose.yml -f dev-images/docker-compose.runtime.yml up --build
+    #   docker compose -f docker-compose.yml -f docker-compose.runtime.yml up --build
     environment:
       - VULNREACH_ALLOW_DOCKER_DAEMON=true
       - DOCKER_HOST=tcp://docker-socket-proxy:2375
