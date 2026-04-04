@@ -15,12 +15,12 @@ scan:
     coverage_wait: 15      # wait after Schemathesis traffic before flushing
     container_port: 3000   # Django backend port
     ebpf:
-      enabled: true        # non-invasive eBPF tracing via bpftrace
-      mode: openat         # trace file-open syscalls (portable, no USDT needed)
-      tracer: bpftrace
-      sidecar_mode: false  # direct tracing from vulnreach container (not sidecar)
-      kernel_check: true   # log advisory if kernel < 4.9 / < 5.2
-      language: python     # Django is a Python runtime
+      enabled: false        # non-invasive eBPF tracing via bpftrace
+    #   mode: openat         # trace file-open syscalls (portable, no USDT needed)
+    #   tracer: bpftrace
+    #   sidecar_mode: false  # direct tracing from vulnreach container (not sidecar)
+    #   kernel_check: true   # log advisory if kernel < 4.9 / < 5.2
+    #   language: python     # Django is a Python runtime
 
   openapi_generator:
     enabled: false         # openapi.json already present in repo
