@@ -8,6 +8,7 @@
 - [First-Time Setup](#first-time-setup)
 - [Native (No Docker)](#native-no-docker)
 - [Production Considerations](#production-considerations)
+- [Managing Users](#managing-users)
 
 ---
 
@@ -212,3 +213,43 @@ sed -i "s/^JWT_SECRET=.*/JWT_SECRET=$(openssl rand -hex 32)/" .env.local
 ```
 
 The server picks up the change on the next request. All existing tokens are rejected; users must log in again. See [SECURITY.md](../SECURITY.md) for details.
+
+---
+
+## Managing Users
+
+VulnReach seeds only the initial admin user from `.env.local`. Additional users are created via the repository layer until a `/users` management endpoint is available.
+
+### Create an Analyst User
+
+```bash
+docker compose exec vulnreach python -c "
+import uuid
+from storage import get_repository
+from api.auth import hash_password
+r = get_repository()
+r.create_user(str(uuid.uuid4()), 'analyst1', hash_password('CHANGE_ME_STRONG_PASSWORD'), 'analyst')
+print('created analyst1')
+"
+```
+
+### Create an Admin User
+
+```bash
+docker compose exec vulnreach python -c "
+import uuid
+from storage import get_repository
+from api.auth import hash_password
+r = get_repository()
+r.create_user(str(uuid.uuid4()), 'admin2', hash_password('CHANGE_ME_STRONG_PASSWORD'), 'admin')
+print('created admin2')
+"
+```
+
+### Verify Login
+
+```bash
+curl -X POST http://localhost:8000/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"analyst1","password":"CHANGE_ME_STRONG_PASSWORD"}'
+```

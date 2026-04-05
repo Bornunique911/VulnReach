@@ -1,0 +1,785 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "VulnReach v2",
+    "description": "Runtime-aware SCA API — proves which CVEs are reachable, not just installed.",
+    "version": "2.0.0",
+    "license": {
+      "name": "Apache 2.0",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8000",
+      "description": "Local development"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT or API key (vrk_...)",
+        "description": "JWT from POST /login or API key from POST /api-keys"
+      }
+    },
+    "schemas": {
+      "LoginRequest": {
+        "type": "object",
+        "required": ["username", "password"],
+        "properties": {
+          "username": { "type": "string", "example": "admin" },
+          "password": { "type": "string", "example": "changeme" }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "properties": {
+          "access_token": { "type": "string" },
+          "token_type": { "type": "string", "example": "bearer" }
+        }
+      },
+      "ApiKey": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "user_id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string", "example": "ci-prod" },
+          "key_prefix": { "type": "string", "example": "vrk_ab12cd34" },
+          "created_at": { "type": "string", "format": "date-time", "nullable": true },
+          "last_used_at": { "type": "string", "format": "date-time", "nullable": true },
+          "expires_at": { "type": "string", "format": "date-time", "nullable": true },
+          "revoked_at": { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+      "ApiKeyCreateRequest": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "default": "default", "maxLength": 120 },
+          "expires_in_days": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 1,
+            "maximum": 3650,
+            "default": 30,
+            "description": "null for no expiry"
+          }
+        }
+      },
+      "ApiKeyCreateResponse": {
+        "type": "object",
+        "properties": {
+          "api_key": { "type": "string", "example": "vrk_ab12cd34.<secret>", "description": "Full token — shown once only" },
+          "warning": { "type": "string" },
+          "key": { "$ref": "#/components/schemas/ApiKey" }
+        }
+      },
+      "ScanRequest": {
+        "type": "object",
+        "properties": {
+          "repo_url": {
+            "type": "string",
+            "nullable": true,
+            "example": "https://github.com/org/app",
+            "description": "Remote repository to clone and scan. Required if repo_path is not set."
+          },
+          "repo_path": {
+            "type": "string",
+            "nullable": true,
+            "example": "/local/path/to/app",
+            "description": "Local path to an already-cloned repository. Required if repo_url is not set."
+          },
+          "config_path": {
+            "type": "string",
+            "nullable": true,
+            "example": "/path/to/vulnreach.yaml",
+            "description": "Path to scan config. Required for local scans; optional for repo_url scans (auto-discovered or defaulted)."
+          },
+          "tools": {
+            "type": "array",
+            "nullable": true,
+            "items": { "type": "string" },
+            "example": ["trivy", "tainter", "dynamic_reachability"],
+            "description": "Override tool list. Defaults to config or available tools."
+          }
+        }
+      },
+      "ScanStartResponse": {
+        "type": "object",
+        "properties": {
+          "scan_id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string", "example": "started" },
+          "tools": { "type": "array", "items": { "type": "string" } },
+          "repo_url": { "type": "string", "nullable": true },
+          "repo_path": { "type": "string", "nullable": true }
+        }
+      },
+      "Evidence": {
+        "type": "object",
+        "properties": {
+          "coverage_hit": { "type": "boolean" },
+          "has_taint_flow": { "type": "boolean" },
+          "call_chain_exists": { "type": "boolean" },
+          "import_detected": { "type": "boolean" },
+          "function": { "type": "string", "nullable": true, "example": "requests.get" },
+          "file": { "type": "string", "nullable": true, "example": "api/views.py" },
+          "files": { "type": "array", "items": { "type": "string" }, "nullable": true },
+          "line": { "type": "integer", "nullable": true },
+          "evidence_type": {
+            "type": "string",
+            "enum": ["dynamic", "static", "uncertain"],
+            "nullable": true
+          }
+        }
+      },
+      "Finding": {
+        "type": "object",
+        "properties": {
+          "cve_id": { "type": "string", "example": "CVE-2024-1234" },
+          "package": { "type": "string", "example": "requests" },
+          "severity": {
+            "type": "string",
+            "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"]
+          },
+          "verdict": {
+            "type": "string",
+            "enum": ["CONFIRMED", "LIKELY", "UNCERTAIN", "SAFE"]
+          },
+          "risk_score": { "type": "number", "example": 3.9 },
+          "priority": {
+            "type": "string",
+            "enum": ["P1", "P2", "P3", "P4"],
+            "description": "P1 >= 5.0, P2 >= 4.0, P3 >= 3.0, P4 < 3.0"
+          },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1, "example": 0.95 },
+          "reachability_class": {
+            "type": "string",
+            "enum": ["DYNAMICALLY_REACHABLE", "STATICALLY_REACHABLE", "UNCERTAIN", "NOT_REACHABLE"]
+          },
+          "finding_type": { "type": "string", "example": "dynamic" },
+          "evidence": { "$ref": "#/components/schemas/Evidence" }
+        }
+      },
+      "ScanSummary": {
+        "type": "object",
+        "properties": {
+          "total": { "type": "integer" },
+          "dynamically_reachable": { "type": "integer" },
+          "statically_reachable": { "type": "integer" },
+          "not_reachable": { "type": "integer" },
+          "uncertain": { "type": "integer" }
+        }
+      },
+      "ScanResult": {
+        "type": "object",
+        "properties": {
+          "scan_id": { "type": "string", "format": "uuid" },
+          "status": {
+            "type": "string",
+            "enum": ["started", "running", "completed", "partial", "blocked", "cancelled", "failed"],
+            "description": "blocked = policy.block_if rule matched; partial = some agents failed"
+          },
+          "pipeline_status": {
+            "type": "string",
+            "enum": ["PASS", "BLOCKED"],
+            "nullable": true
+          },
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "repo_url": { "type": "string", "nullable": true },
+              "repo_path": { "type": "string", "nullable": true },
+              "tools": { "type": "array", "items": { "type": "string" } },
+              "created_by": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string" },
+                  "username": { "type": "string" }
+                }
+              }
+            }
+          },
+          "created_at": { "type": "string", "format": "date-time", "nullable": true },
+          "vulnerabilities": { "type": "array", "items": { "type": "object" } },
+          "correlation": { "type": "array", "items": { "$ref": "#/components/schemas/Finding" } },
+          "dynamically_reachable": { "type": "array", "items": { "$ref": "#/components/schemas/Finding" } },
+          "statically_reachable": { "type": "array", "items": { "$ref": "#/components/schemas/Finding" } },
+          "not_reachable": { "type": "array", "items": { "$ref": "#/components/schemas/Finding" } },
+          "uncertain": { "type": "array", "items": { "$ref": "#/components/schemas/Finding" } },
+          "summary": { "$ref": "#/components/schemas/ScanSummary" }
+        }
+      },
+      "FixPlanEntry": {
+        "type": "object",
+        "properties": {
+          "package": { "type": "string" },
+          "current_version": { "type": "string" },
+          "fix_version": { "type": "string" },
+          "reachable_cves_removed": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "ExplainRequest": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": ["none", "anthropic", "ollama"],
+            "default": "none",
+            "description": "none = offline structured summary, anthropic = Anthropic LLM, ollama = local Ollama instance"
+          },
+          "model": { "type": "string", "nullable": true, "example": "claude-opus-4-6" }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "detail": { "type": "string" }
+        }
+      }
+    }
+  },
+  "security": [{ "bearerAuth": [] }],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Liveness check",
+        "operationId": "health",
+        "security": [],
+        "tags": ["Public"],
+        "responses": {
+          "200": {
+            "description": "Service is up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "ok" },
+                    "boot_id": { "type": "string", "example": "abc123def456" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tools": {
+      "get": {
+        "summary": "List available scan tools",
+        "operationId": "listTools",
+        "tags": ["Public"],
+        "responses": {
+          "200": {
+            "description": "List of registered agent names",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "available_tools": { "type": "array", "items": { "type": "string" } }
+                  }
+                },
+                "example": {
+                  "available_tools": [
+                    "git", "trivy", "tainter", "python_reachability",
+                    "java_reachability", "multi_language_reachability",
+                    "dynamic_reachability", "intelligent_dast", "semgrep",
+                    "route_extractor", "metadata", "pytest_coverage", "openapi_generator"
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/login": {
+      "post": {
+        "summary": "Get a JWT access token",
+        "operationId": "login",
+        "security": [],
+        "tags": ["Auth"],
+        "description": "Rate-limited: 10 requests/minute per IP.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoginRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "JWT token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/LoginResponse" }
+              }
+            }
+          },
+          "401": { "description": "Invalid credentials", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "429": { "description": "Rate limit exceeded" }
+        }
+      }
+    },
+    "/api-keys": {
+      "get": {
+        "summary": "List API keys for the authenticated user",
+        "operationId": "listApiKeys",
+        "tags": ["Auth"],
+        "responses": {
+          "200": {
+            "description": "API key list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "api_keys": { "type": "array", "items": { "$ref": "#/components/schemas/ApiKey" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "post": {
+        "summary": "Create an API key",
+        "operationId": "createApiKey",
+        "tags": ["Auth"],
+        "description": "The full token value is returned once and not stored. Save it immediately.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ApiKeyCreateRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Created API key (token shown once)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiKeyCreateResponse" }
+              }
+            }
+          },
+          "400": { "description": "Missing name / invalid length / invalid expires_in_days", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/api-keys/{key_id}/revoke": {
+      "post": {
+        "summary": "Revoke an API key",
+        "operationId": "revokeApiKey",
+        "tags": ["Auth"],
+        "parameters": [
+          { "name": "key_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Key revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "string" },
+                    "revoked": { "type": "boolean", "example": true }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "Key not found or already revoked", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/api-keys/{key_id}": {
+      "delete": {
+        "summary": "Delete an API key",
+        "operationId": "deleteApiKey",
+        "tags": ["Auth"],
+        "parameters": [
+          { "name": "key_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Key deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "string" },
+                    "deleted": { "type": "boolean", "example": true }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "Key not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/scan": {
+      "post": {
+        "summary": "Start a scan",
+        "operationId": "startScan",
+        "tags": ["Scans"],
+        "description": "Starts an async scan. Returns immediately with a scan_id. Poll GET /scan/{scan_id} for results.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ScanRequest" },
+              "examples": {
+                "remote": {
+                  "summary": "Scan a GitHub repo",
+                  "value": { "repo_url": "https://github.com/org/app" }
+                },
+                "local": {
+                  "summary": "Scan a local repo with config",
+                  "value": { "repo_path": "/srv/app", "config_path": "/srv/app/vulnreach.yaml" }
+                },
+                "custom_tools": {
+                  "summary": "Override tool list",
+                  "value": { "repo_url": "https://github.com/org/app", "tools": ["trivy", "tainter", "dynamic_reachability"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Scan started",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ScanStartResponse" }
+              }
+            }
+          },
+          "400": { "description": "Missing repo source / invalid config / unknown tool", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "413": { "description": "Request body exceeds 1 MB", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/scans": {
+      "get": {
+        "summary": "List scans",
+        "operationId": "listScans",
+        "tags": ["Scans"],
+        "description": "Admins see all scans. Analysts see only their own.",
+        "responses": {
+          "200": {
+            "description": "Scan list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "scans": { "type": "array", "items": { "type": "object" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/scan/{scan_id}": {
+      "get": {
+        "summary": "Get scan results",
+        "operationId": "getScan",
+        "tags": ["Scans"],
+        "parameters": [
+          { "name": "scan_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Full scan result with classified findings",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ScanResult" }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "Scan not found or not owned by requesting user", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "delete": {
+        "summary": "Delete a scan",
+        "operationId": "deleteScan",
+        "tags": ["Scans"],
+        "description": "Cancels the scan task if still running, then removes all scan data.",
+        "parameters": [
+          { "name": "scan_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Scan deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "scan_id": { "type": "string" },
+                    "deleted": { "type": "boolean", "example": true }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "Scan not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/scan/{scan_id}/cancel": {
+      "post": {
+        "summary": "Cancel a running scan",
+        "operationId": "cancelScan",
+        "tags": ["Scans"],
+        "parameters": [
+          { "name": "scan_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Scan cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "scan_id": { "type": "string" },
+                    "status": { "type": "string", "example": "cancelled" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "Scan not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "409": { "description": "Scan is not in a running state", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/scan/{scan_id}/raw": {
+      "get": {
+        "summary": "List tool names with raw output",
+        "operationId": "listRawTools",
+        "tags": ["Scans"],
+        "parameters": [
+          { "name": "scan_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tool names that have stored raw output",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "scan_id": { "type": "string" },
+                    "tools": { "type": "array", "items": { "type": "string" } }
+                  }
+                },
+                "example": { "scan_id": "a1b2...", "tools": ["trivy", "tainter", "dynamic_reachability"] }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "Scan not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/scan/{scan_id}/raw/{tool_name}": {
+      "get": {
+        "summary": "Get raw output for a specific tool",
+        "operationId": "getRawOutput",
+        "tags": ["Scans"],
+        "parameters": [
+          { "name": "scan_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+          { "name": "tool_name", "in": "path", "required": true, "schema": { "type": "string" }, "example": "trivy" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw JSON payload from the agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "scan_id": { "type": "string" },
+                    "tool_name": { "type": "string" },
+                    "output": { "type": "object" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "Scan not found or no raw output for tool", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/scan/{scan_id}/fix-plan": {
+      "get": {
+        "summary": "Get prioritised fix plan",
+        "operationId": "getFixPlan",
+        "tags": ["Analysis"],
+        "description": "Returns a prioritised list of package upgrades that resolve reachable CVEs.",
+        "parameters": [
+          { "name": "scan_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fix plan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "scan_id": { "type": "string" },
+                    "fix_plan": { "type": "array", "items": { "$ref": "#/components/schemas/FixPlanEntry" } },
+                    "summary": {
+                      "type": "object",
+                      "properties": {
+                        "reachable_cves_fixable": { "type": "integer" },
+                        "packages_to_upgrade": { "type": "integer" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "Scan not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/scan/{scan_id}/graph/{cve_id}": {
+      "get": {
+        "summary": "Get call-chain graph for a CVE",
+        "operationId": "getCallGraph",
+        "tags": ["Analysis"],
+        "description": "Returns a Mermaid-formatted call-chain graph tracing the vulnerable code path.",
+        "parameters": [
+          { "name": "scan_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+          { "name": "cve_id", "in": "path", "required": true, "schema": { "type": "string" }, "example": "CVE-2024-1234" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Mermaid call-chain graph",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "scan_id": { "type": "string" },
+                    "cve_id": { "type": "string" },
+                    "package": { "type": "string" },
+                    "call_chain_graph": { "type": "string", "description": "Mermaid diagram source" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "No finding or no call graph for this CVE", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/scan/{scan_id}/explain/{cve_id}": {
+      "post": {
+        "summary": "Get LLM explanation for a CVE finding",
+        "operationId": "explainFinding",
+        "tags": ["Analysis"],
+        "description": "provider=none returns an offline structured summary. provider=anthropic or provider=ollama invokes an LLM.",
+        "parameters": [
+          { "name": "scan_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+          { "name": "cve_id", "in": "path", "required": true, "schema": { "type": "string" }, "example": "CVE-2024-1234" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ExplainRequest" },
+              "examples": {
+                "offline": { "summary": "Offline summary", "value": { "provider": "none" } },
+                "anthropic": { "summary": "Anthropic LLM", "value": { "provider": "anthropic", "model": "claude-opus-4-6" } },
+                "ollama": { "summary": "Local Ollama", "value": { "provider": "ollama", "model": "llama3" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Explanation for the finding",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "scan_id": { "type": "string" },
+                    "cve_id": { "type": "string" },
+                    "explanation": { "type": "object" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "Scan not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/scan/{scan_id}/export/pdf": {
+      "get": {
+        "summary": "Download PDF report",
+        "operationId": "exportPdf",
+        "tags": ["Export"],
+        "parameters": [
+          { "name": "scan_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "PDF report",
+            "headers": {
+              "Content-Disposition": {
+                "schema": { "type": "string" },
+                "example": "attachment; filename=\"vulnreach-a1b2c3d4.pdf\""
+              }
+            },
+            "content": {
+              "application/pdf": {
+                "schema": { "type": "string", "format": "binary" }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "Scan not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    }
+  },
+  "tags": [
+    { "name": "Public", "description": "No authentication required" },
+    { "name": "Auth", "description": "Login and API key management" },
+    { "name": "Scans", "description": "Start, list, retrieve, cancel, and delete scans" },
+    { "name": "Analysis", "description": "Fix plans, call graphs, and LLM explanations" },
+    { "name": "Export", "description": "Report export" }
+  ]
+}

@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 
-Traditional SCA tools report every CVE in every dependency. VulnReach filters that noise by proving — through static analysis, taint tracking, and live runtime coverage — which vulnerabilities can actually be reached and exploited in your application.
+VulnReach builds on standard SCA output by adding reachability context — proving through static analysis, taint tracking, and live runtime coverage which of the detected CVEs can actually be reached in your application.
 
 ---
 
@@ -23,14 +23,6 @@ Traditional SCA tools report every CVE in every dependency. VulnReach filters th
   - runtime profile uses restricted `docker-socket-proxy`
 - Deterministic fixture quality gates for Java/JavaScript/Go in CI
 - Threat model + incubator application readiness checklist published
-
-### In Progress
-
-- Subprocess/command execution hardening audit across all agent paths
-- Data retention/redaction policy for raw artifacts
-- Maintainer response SLA + support policy
-- Signed release artifacts/provenance
-- Nightly end-to-end fixture scans and performance baselines
 
 ### Experimental
 
@@ -117,36 +109,9 @@ curl http://localhost:8000/scan/<scan_id> \
 
 ---
 
-## Add More Users
-
-VulnReach currently seeds only the initial admin user from `.env.local`.
-There is no `/users` create endpoint yet, so additional users are created via repository methods.
-
-### Create an Analyst User (Docker Compose)
-
-```bash
-docker compose exec vulnreach python -c "import uuid; from storage import get_repository; from api.auth import hash_password; r=get_repository(); r.create_user(str(uuid.uuid4()), 'analyst1', hash_password('CHANGE_ME_STRONG_PASSWORD'), 'analyst'); print('created analyst1')"
-```
-
-### Create an Admin User (Docker Compose)
-
-```bash
-docker compose exec vulnreach python -c "import uuid; from storage import get_repository; from api.auth import hash_password; r=get_repository(); r.create_user(str(uuid.uuid4()), 'admin2', hash_password('CHANGE_ME_STRONG_PASSWORD'), 'admin'); print('created admin2')"
-```
-
-### Verify Login
-
-```bash
-curl -X POST http://localhost:8000/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"analyst1","password":"CHANGE_ME_STRONG_PASSWORD"}'
-```
-
----
-
 ## Features
 
-- **Zero noise SCA** — only surfaces CVEs with a proven code path
+- **Reachability-filtered SCA** — classifies each CVE by evidence strength, not just CVSS score
 - **Runtime confirmation** — Docker-based coverage collection via `coverage.py`
 - **Taint tracking** — traces user input → vulnerable sinks (SQL, subprocess, YAML, pickle)
 - **LLM-steered DAST** — Claude/OpenAI/Ollama generates and validates exploit payloads (optional)
@@ -155,6 +120,26 @@ curl -X POST http://localhost:8000/login \
 - **API tokens (API keys)** — long-lived machine auth for curl/CI (`Authorization: Bearer <API_KEY>`)
 - **PDF export** — `GET /scan/{id}/export/pdf`
 - **No vendor lock-in** — LLM features default to `provider: none`; Ollama supported for offline use
+
+---
+
+## In Practice
+
+Scan target: [multi-tier-dvpa](https://github.com/ihrishikesh0896/multi-tier-dvpa) — an intentionally vulnerable Python/Django application with 72 raw CVEs across 11 packages.
+
+| Layer | Result |
+|---|---|
+| Raw CVEs (Trivy) | 72 |
+| Classified findings (VulnReach) | 90 |
+| DYNAMICALLY_REACHABLE — fix now | **49** |
+| STATICALLY_REACHABLE — fix this sprint | **23** |
+| UNCERTAIN — investigate | **18** |
+| NOT_REACHABLE — suppress | 0 |
+| CI pipeline gate | **BLOCKED** |
+
+46% of findings were moved out of the undifferentiated "fix everything" queue into a prioritised action list. In a typical production service (where many transitive dependencies are never called), this figure rises to 70–90%.
+
+Full methodology, evidence chain detail, and package-level breakdown: [docs/benchmark.md](docs/benchmark.md)
 
 ---
 
@@ -194,6 +179,7 @@ curl -X POST http://localhost:8000/login \
 - PostgreSQL 13+
 - Docker + Docker Compose v2 (for dynamic analysis)
 - `trivy` on PATH ([install](https://aquasecurity.github.io/trivy/latest/getting-started/installation/))
+- `jq` (used in quick start examples — [install](https://jqlang.github.io/jq/download/))
 
 Optional (all skip gracefully if absent):
 - `semgrep` — `pip install semgrep`
