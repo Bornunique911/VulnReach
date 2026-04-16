@@ -4,3 +4,4 @@ PyYAML==5.3.1
 # flask runtime
 Flask==2.3.3
 Werkzeug==2.3.7
+pytest==9.0.2
