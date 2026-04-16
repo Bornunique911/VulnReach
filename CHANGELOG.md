@@ -1,5 +1,54 @@
 # Changelog
 
+## [Unreleased] — 2026-04-16
+
+### Added
+
+#### CI / CD
+- **All workflows now run on every PR** — `ci.yml`, `build-test.yml`, `docker-publish.yml`, and `python-publish.yml` trigger on any pull request regardless of source branch. `ebpf-e2e.yml` triggers on PRs touching eBPF-related paths.
+- **Docker publish workflow** — `.github/workflows/docker-publish.yml` builds and pushes to both `ghcr.io` and `docker.io` on `v*.*.*` tag push or GitHub Release. On PRs, image is built but not pushed (login steps skipped via `github.event_name != 'pull_request'`).
+- **eBPF E2E workflow** — `.github/workflows/ebpf-e2e.yml` runs the full eBPF pipeline test on `ubuntu-latest` (kernel 5.15+) with `bpftrace` installed. Path-filtered to only trigger when eBPF-related files change.
+- **`CI.md`** — Complete CI/CD reference: per-workflow breakdown, local reproduction commands, PR checklist, secrets reference, and environment variable table.
+
+#### eBPF E2E Testing
+- **`labs/ebpf-e2e/`** — New lab for full pipeline E2E testing via eBPF sidecar. Target app (`ubuntu:22.04` + USDT Python) exposes a controlled vulnerable route (`/parse` calls `yaml.safe_load`) and a negative-control function (`unused_pickle`) never called at runtime.
+- **`tests/test_ebpf_e2e.py`** — End-to-end pytest suite with two test classes: `TestEbpfSidecarE2E` (full pipeline — eBPF sidecar → correlator → `DYNAMICALLY_REACHABLE` verdict, guarded by Linux + bpftrace + Docker) and `TestEbpfProbeSelection` (probe_router logic — USDT selection, openat fallback, guarded by Linux only).
+
+#### Correlation Engine
+- **`uncertainty_reason` field on UNCERTAIN findings** — Every `UNCERTAIN` finding now includes a machine-readable `uncertainty_reason` code and a human-readable `reason` string explaining why the finding could not be confirmed:
+  - `taint_no_dynamic` — taint flow detected but runtime scan was not run; action: enable `scan.runtime.enabled: true`
+  - `taint_dynamic_miss` — taint flow detected and runtime scan ran but package was not observed in coverage; action: exercise the affected endpoint with representative traffic
+  Both the `uncertain` bucket and the full `evidence` blob carry the code so API consumers and the dashboard both surface it.
+
+#### Multi-language Reachability
+- **`analysis_notes` in agent bridge metadata** — When Java, JavaScript, or other non-Python languages are analyzed, `AgentResult.metadata.analysis_notes` now includes a per-language note explaining that call graph and import detection are functional but taint-flow (user-input-to-sink tracing) is not yet supported. Helps API consumers distinguish Python confidence levels from non-Python ones.
+
+#### Packaging & Distribution
+- **`tainter` now installed from PyPI** — `tainter` is now a public PyPI package. `Dockerfile`, `requirements.txt`, and `pyproject.toml` updated to install via `pip install tainter`. Local wheel in `libs/` no longer required.
+- **`taint` optional extra in `pyproject.toml`** — `pip install vulnreach[taint]` installs tainter. `pip install vulnreach[full]` includes it alongside `server` and `llm`.
+- **`ROADMAP.md`** — New file documenting language support status, near-term / medium-term / longer-term roadmap, and known limitations.
+
+### Changed
+
+#### Documentation
+- **`README.md`** — Language support banner updated: Java and JavaScript described as "functional call graph analysis (experimental)" rather than "agent exists but not suitable for production use". Scan cancellation and Java/JS reachability added to Project Status. OWASP submission status updated to submitted.
+- **`docs/TODO.md`** — 12 P2 items reclassified as done after codebase audit: async Docker operations (fully async via `asyncio.create_subprocess_exec`), scan cancellation (`POST /scan/{id}/cancel`), orphaned container cleanup (`_cleanup_port_conflicts`), `VULNREACH_WORK_DIR` configurability, coverage flush retry logic, CI pipeline, dependency pinning, Docker image publishing, version tagging, Java reachability, JavaScript reachability, OWASP application submission. Summary: **52/53 items done**. Only remaining item: SBOM ingestion.
+- **`ROADMAP.md`** — Language table corrected: Java has real call graph (Maven/Gradle dependency parsing, method scope tracking); JavaScript has real call graph (BFS path tracing, route entry point detection). Both were incorrectly described as stubs. Roadmap reframed around actual gaps: taint-flow for Java/JS, SBOM ingestion.
+- **`config/generic_scan.yml`** — eBPF section expanded with all config keys (`mode`, `sidecar_mode`, `language`) and inline documentation explaining requirements and fallback behavior.
+- **`docs/development.md`** — Tainter install instructions updated: local wheel and git source removed, `pip install tainter` only.
+
+#### CI
+- **`ci.yml` tainter in test job** — `pip install tainter` added to the test job so taint-related code paths are exercised during CI rather than silently skipped.
+- **`python-publish.yml` restructured** — Split into `build` job (runs on all triggers) and `publish-to-pypi` job (runs only on `release` events). Build artifact uploaded as a GitHub Actions artifact for inspection on non-release runs.
+
+### Fixed
+
+#### Dockerfile
+- **`pyproject.toml` version out of sync with git tag** — `pyproject.toml` declared version `2.0.0` while git tag `v2.0.1` already existed. Bumped to `2.0.1`.
+- **`pyproject.toml` description used "exploitable"** — Description said "proves which CVEs are actually exploitable"; corrected to "reachable" (the tool measures reachability, not exploitability).
+
+---
+
 ## [Unreleased] — 2026-03-27
 
 ### Added

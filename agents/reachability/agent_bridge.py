@@ -142,6 +142,16 @@ class MultiLanguageReachabilityBridge:
                 except Exception:
                     pass
 
+        _experimental_languages = [lang for lang in languages if lang != "python"]
+        analysis_notes: Dict[str, str] = {}
+        for lang in _experimental_languages:
+            analysis_notes[lang] = (
+                f"{lang} reachability analysis is experimental. Call graph and "
+                "import detection are functional, but taint-flow analysis "
+                f"(user-input-to-sink tracing) is not yet supported for {lang}. "
+                "Treat findings as indicative, not fully confirmed."
+            )
+
         metadata: Dict[str, Any] = {
             "status": "error" if error else "ok",
             "language": languages[0] if languages else "unknown",
@@ -151,6 +161,8 @@ class MultiLanguageReachabilityBridge:
             "raw": next(iter(raw_reports.values()), {}),
             "raw_by_language": raw_reports,
         }
+        if analysis_notes:
+            metadata["analysis_notes"] = analysis_notes
         if missing_reports:
             metadata["missing_reports"] = missing_reports
         if error:

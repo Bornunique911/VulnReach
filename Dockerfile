@@ -30,9 +30,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Install schemathesis (used by dynamic reachability agent) and semgrep
 RUN pip install --no-cache-dir schemathesis coverage semgrep
 
-# Install tainter from local libs
-COPY libs/tainter-0.1.0-py3-none-any.whl /tmp/
-RUN pip install --no-cache-dir /tmp/tainter-0.1.0-py3-none-any.whl
+# Install tainter from PyPI
+RUN pip install --no-cache-dir tainter
 
 COPY . .
 

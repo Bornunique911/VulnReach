@@ -157,6 +157,10 @@ class CorrelationService:
                 }
                 if static_subtype:
                     evidence_blob["static_subtype"] = static_subtype
+                if reachability_class == "UNCERTAIN":
+                    uncertainty_reason, uncertainty_detail = _uncertain_reason(dyn)
+                    evidence_blob["uncertainty_reason"] = uncertainty_reason
+                    evidence_blob["uncertainty_detail"] = uncertainty_detail
 
                 finding: Dict[str, Any] = {
                     "cve_id": cve,
@@ -201,9 +205,11 @@ class CorrelationService:
                         "reasoning": _static_reasoning(static_subtype, import_detected, call_chain_exists, function, file),
                     })
                 elif reachability_class == "UNCERTAIN":
+                    uncertainty_reason, uncertainty_detail = _uncertain_reason(dyn)
                     uncertain.append({
                         **summary,
-                        "reason": "taint-flow evidence only — no call chain and no runtime coverage confirm execution",
+                        "uncertainty_reason": uncertainty_reason,
+                        "reason": uncertainty_detail,
                     })
                 else:
                     not_reachable.append({"cve_id": cve, "package": package, "severity": severity})
@@ -307,6 +313,32 @@ def _static_reasoning(
     if subtype == "IMPORT":
         return "Package import was detected but no function-level usage or runtime execution was observed."
     return "Static evidence present; no runtime execution confirmed."
+
+
+def _uncertain_reason(dyn: Optional[Dict[str, Any]]) -> tuple[str, str]:
+    """Return a (code, human-readable detail) pair explaining why a finding is UNCERTAIN.
+
+    Codes:
+        taint_no_dynamic  — taint flow found but runtime scan was not run.
+                            Action: enable scan.runtime.enabled: true and re-scan.
+        taint_dynamic_miss — taint flow found, runtime scan ran, but this package
+                             was never hit during the test run.
+                             Action: exercise the affected endpoint with representative
+                             input and re-scan, or review the taint flow manually.
+    """
+    if not dyn:
+        return (
+            "taint_no_dynamic",
+            "Taint flow detected but no runtime scan was run. "
+            "Enable scan.runtime.enabled: true and re-scan to confirm or dismiss.",
+        )
+    return (
+        "taint_dynamic_miss",
+        "Taint flow detected and runtime scan ran, but this package was not observed "
+        "in coverage. The vulnerable path likely requires specific input to trigger. "
+        "Exercise the affected endpoint with representative traffic and re-scan, "
+        "or review the taint flow manually.",
+    )
 
 
 def _normalize_package(package: Any) -> str:

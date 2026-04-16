@@ -15,8 +15,19 @@ scan:
     timeout: 180
     coverage_wait: 15
     container_port: 3000
+
+    # eBPF mode — non-invasive alternative to Dockerfile patching.
+    # Attaches to the running container without modifying the image.
+    # Requires: Linux kernel ≥4.9, bpftrace in PATH,
+    #           VULNREACH_ALLOW_DOCKER_DAEMON=true,
+    #           VULNREACH_ALLOW_EBPF=1
+    # For apps with docker-compose.yml, use sidecar_mode: true.
+    # For single-container apps, use sidecar_mode: false (host-side tracing).
     ebpf:
-      enabled: false
+      enabled: false          # set true to use eBPF instead of coverage.py patching
+      mode: usdt              # usdt (line/function-level) | openat (file-level, more portable)
+      sidecar_mode: true      # true = inject compose sidecar; false = host-side bpftrace
+      language: auto          # auto | python | java | node | go | ruby
 
   openapi_generator:
     enabled: false
