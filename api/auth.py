@@ -1,7 +1,9 @@
 import base64
 import hashlib
+import hmac
 import os
 import logging
+import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,7 +47,29 @@ def _prehash(plain: str) -> bytes:
 
 
 def hash_api_key(raw_key: str) -> str:
-    return hashlib.sha256((raw_key or "").encode("utf-8")).hexdigest()
+    """Returns 'salt_hex:sha256(salt_bytes + key_bytes)' for DB storage.
+    Each call produces a different stored value due to fresh random salt.
+    """
+    salt = secrets.token_bytes(32)
+    digest = hashlib.sha256(salt + (raw_key or "").encode("utf-8")).hexdigest()
+    return f"{salt.hex()}:{digest}"
+
+
+def verify_api_key(raw_key: str, stored_hash: str) -> bool:
+    """Constant-time verification against a stored hash.
+    Handles both legacy (unsalted SHA-256) and current (salted) formats.
+    """
+    if ":" not in stored_hash:
+        # Legacy path: key was stored before salting was introduced
+        legacy = hashlib.sha256((raw_key or "").encode("utf-8")).hexdigest()
+        return hmac.compare_digest(legacy, stored_hash)
+    salt_hex, expected_digest = stored_hash.split(":", 1)
+    try:
+        salt = bytes.fromhex(salt_hex)
+    except ValueError:
+        return False
+    actual = hashlib.sha256(salt + (raw_key or "").encode("utf-8")).hexdigest()
+    return hmac.compare_digest(actual, expected_digest)
 
 
 @dataclass

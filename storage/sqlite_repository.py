@@ -478,6 +478,17 @@ class SQLiteRepository(StorageRepository):
             ).fetchone()
         return dict(row) if row else None
 
+    def get_api_key_candidates_by_prefix(self, key_prefix: str) -> List[Dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT ak.id AS key_id, ak.key_hash, u.id AS user_id, u.username, u.role
+                   FROM api_keys ak JOIN users u ON u.id=ak.user_id
+                   WHERE ak.key_prefix=? AND ak.revoked_at IS NULL
+                     AND (ak.expires_at IS NULL OR ak.expires_at > strftime('%Y-%m-%dT%H:%M:%SZ','now'))""",
+                (key_prefix,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def touch_api_key_last_used(self, key_id: str) -> None:
         with self._conn() as conn:
             conn.execute(
