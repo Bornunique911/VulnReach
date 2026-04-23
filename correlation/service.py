@@ -6,6 +6,7 @@ from correlation.engine import (
     classify_reachability,
     confidence_from_verdict,
     dynamic_reachability_verdict,
+    evidence_basis_from_signals,
     priority_from_score,
     risk_score,
 )
@@ -177,6 +178,14 @@ class CorrelationService:
 
                 if static_subtype:
                     finding["static_subtype"] = static_subtype
+
+                finding["evidence_basis"] = evidence_basis_from_signals(
+                    finding_type=finding_type,
+                    has_coverage_hit=coverage_hit,
+                    has_taint_flow=has_taint_flow,
+                    call_chain_exists=call_chain_exists,
+                    import_detected=import_detected,
+                )
 
                 correlation_results.append(finding)
 
