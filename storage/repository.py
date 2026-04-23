@@ -199,6 +199,7 @@ class PostgresRepository(StorageRepository):
 
         CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
         CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash);
+        CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);
         """
         with self._conn() as conn:
             with conn.cursor() as cur:
@@ -331,6 +332,7 @@ class PostgresRepository(StorageRepository):
             """,
             "CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash);",
+            "CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);",
         ]
         with self._conn() as conn:
             with conn.cursor() as cur:
