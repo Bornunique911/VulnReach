@@ -89,4 +89,5 @@ def test_analysis_coverage_empty_raw():
     cov = result["analysis_coverage"]
     assert cov["tools_ran"] == []
     assert cov["tools_skipped"] == {}
+    assert cov["tools_errored"] == {}
     assert all(v is False for v in cov["evidence_layers"].values())

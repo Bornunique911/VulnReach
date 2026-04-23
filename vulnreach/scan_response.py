@@ -46,6 +46,7 @@ def _build_analysis_coverage(raw: Dict[str, Any]) -> Dict[str, Any]:
 
     for tool_name, payload in (raw or {}).items():
         if isinstance(payload, dict):
+            # "status": "skipped" and "error" are mutually exclusive in agent output (runner.py invariant)
             if payload.get("status") == "skipped":
                 tools_skipped[tool_name] = str(payload.get("reason", ""))
             elif "error" in payload:
