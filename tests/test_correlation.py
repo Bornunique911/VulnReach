@@ -1,6 +1,7 @@
 import pytest
 
 from correlation.engine import (
+    classify_reachability,
     dynamic_reachability_verdict,
     evidence_basis_from_signals,
     priority_from_score,
@@ -82,5 +83,66 @@ def test_dynamic_finding_type_without_coverage_falls_through():
     """finding_type='dynamic' but has_coverage_hit=False falls through to other signals."""
     # This shouldn't happen in practice, but the function handles it gracefully.
     assert evidence_basis_from_signals("dynamic", has_coverage_hit=False, call_chain_exists=True) == "static"
+
+
+# ------------------------------------------------------------------
+# classify_reachability — import-only demotion to UNCERTAIN (Task 4)
+# ------------------------------------------------------------------
+
+def test_classify_import_only_is_uncertain():
+    """import_detected alone must produce UNCERTAIN, not STATICALLY_REACHABLE."""
+    cls, subtype = classify_reachability(
+        coverage_hit=False,
+        call_chain_exists=False,
+        import_detected=True,
+        function=None,
+        file=None,
+        evidence_type="static",
+        package="requests",
+    )
+    assert cls == "UNCERTAIN"
+    assert subtype is None
+
+
+def test_classify_call_chain_without_import_is_statically_reachable():
+    """call_chain_exists=True (even without import) must produce STATICALLY_REACHABLE."""
+    cls, subtype = classify_reachability(
+        coverage_hit=False,
+        call_chain_exists=True,
+        import_detected=False,
+        function=None,
+        file=None,
+        evidence_type="static",
+        package="requests",
+    )
+    assert cls == "STATICALLY_REACHABLE"
+
+
+def test_classify_import_plus_call_chain_is_statically_reachable():
+    """import + call_chain together still produces STATICALLY_REACHABLE."""
+    cls, subtype = classify_reachability(
+        coverage_hit=False,
+        call_chain_exists=True,
+        import_detected=True,
+        function=None,
+        file=None,
+        evidence_type="static",
+        package="requests",
+    )
+    assert cls == "STATICALLY_REACHABLE"
+
+
+def test_classify_no_evidence_is_not_reachable():
+    """No evidence at all must produce NOT_REACHABLE."""
+    cls, subtype = classify_reachability(
+        coverage_hit=False,
+        call_chain_exists=False,
+        import_detected=False,
+        function=None,
+        file=None,
+        evidence_type="static",
+        package="requests",
+    )
+    assert cls == "NOT_REACHABLE"
 
 
