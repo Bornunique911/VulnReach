@@ -49,10 +49,7 @@ class AgentRunner:
         """Execute agents in dependency-aware stages with parallelism where safe."""
         results: List[AgentResult] = []
 
-        cfg_tools = context.config.scan.tools if context.config else ["trivy", "tainter"]
-        tools = [tool.lower() for tool in cfg_tools]
-        if context.repo_url and "git" not in tools:
-            tools.insert(0, "git")
+        tools = self._selected_tools(context)
 
         # ── Stage 1: Git clone (sequential prerequisite) ────────────────
         if "git" in tools and context.repo_url:
@@ -65,6 +62,10 @@ class AgentRunner:
             results.append(git_result)
             if git_result.metadata.get("fatal") or git_result.metadata.get("error"):
                 return results
+            # GitAgent may auto-discover vulnreach.yaml/scan.yml in the cloned
+            # repository and replace context.config. Refresh the selected tools
+            # so repository-owned config controls subsequent stages.
+            tools = self._selected_tools(context)
 
         detected_languages = self._detect_project_languages(context)
         python_only_repo = self._is_python_only_repo(detected_languages)
@@ -253,6 +254,13 @@ class AgentRunner:
                 entries.append(stage_map[tool])
                 seen.add(tool)
         return entries
+
+    def _selected_tools(self, context: ScanContext) -> List[str]:
+        cfg_tools = context.config.scan.tools if context.config else ["trivy", "tainter"]
+        tools = [tool.lower() for tool in cfg_tools]
+        if context.repo_url and "git" not in tools:
+            tools.insert(0, "git")
+        return tools
 
     async def _run_and_persist(
         self,
