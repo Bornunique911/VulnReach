@@ -1,9 +1,26 @@
-Metadata-Version: 2.1
+Metadata-Version: 2.4
 Name: vulnreach
-Version: 2.0.0
-Summary: Vulnerability reachability scanner — proves which CVEs are actually exploitable
+Version: 2.0.1
+Summary: Vulnerability reachability scanner — proves which CVEs are actually reachable
 Requires-Python: >=3.11
-Provides-Extra: server
-Provides-Extra: llm
-Provides-Extra: full
 License-File: LICENSE
+Requires-Dist: click>=8.0
+Requires-Dist: packaging>=21
+Requires-Dist: requests>=2.32
+Requires-Dist: rich>=13
+Requires-Dist: pyyaml>=6
+Requires-Dist: pydantic>=2
+Requires-Dist: python-dotenv>=1.0
+Provides-Extra: server
+Requires-Dist: fastapi>=0.135; extra == "server"
+Requires-Dist: uvicorn>=0.40; extra == "server"
+Requires-Dist: psycopg2-binary>=2.9; extra == "server"
+Requires-Dist: slowapi>=0.1; extra == "server"
+Provides-Extra: llm
+Requires-Dist: anthropic>=0.85; extra == "llm"
+Requires-Dist: openai>=2.0; extra == "llm"
+Provides-Extra: taint
+Requires-Dist: tainter; extra == "taint"
+Provides-Extra: full
+Requires-Dist: vulnreach[llm,server,taint]; extra == "full"
+Dynamic: license-file

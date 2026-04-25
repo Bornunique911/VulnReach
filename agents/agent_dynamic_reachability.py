@@ -45,6 +45,15 @@ def _target_host() -> str:
     # on Linux when --add-host=host.docker.internal:host-gateway is set.
     return "host.docker.internal"
 
+
+def _safe_compose_project_name(repo_path: Path) -> str:
+    """Return a Docker image-safe Compose project name for temp clone paths."""
+    raw = repo_path.name.lower()
+    safe = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+    safe = re.sub(r"-{2,}", "-", safe)
+    return (safe or "vulnreach-scan")[:63].strip("-") or "vulnreach-scan"
+
+
 try:
     import aiohttp
 except ImportError:
@@ -1469,12 +1478,13 @@ class DynamicReachabilityAgent(BaseTool):
         container_started: Dict[str, str] = {"status": "no", "id": "na"}
         schemathesis_meta: Dict[str, Any] = {}
         target_svc = patch_meta.get("target_service", "backend")
+        compose_project = _safe_compose_project_name(repo_path)
 
         try:
             # Step 3 — docker compose up
             logger.info("[dynamic][compose] Building and starting services...")
             proc = await asyncio.create_subprocess_exec(
-                "docker", "compose", "-f", str(patched_compose_path),
+                "docker", "compose", "-p", compose_project, "-f", str(patched_compose_path),
                 "up", "-d", "--build",
                 cwd=str(repo_path),
                 stdout=asyncio.subprocess.PIPE,
@@ -1521,13 +1531,13 @@ class DynamicReachabilityAgent(BaseTool):
             # This runs `coverage combine && coverage json` inside the running
             # container, writing the result to the mounted /coverage volume.
             await self._extract_coverage_via_compose(
-                patched_compose_path, repo_path, target_svc, coverage_dir
+                patched_compose_path, repo_path, target_svc, coverage_dir, compose_project
             )
 
         finally:
             # Step 6b — docker compose down
             down_proc = await asyncio.create_subprocess_exec(
-                "docker", "compose", "-f", str(patched_compose_path),
+                "docker", "compose", "-p", compose_project, "-f", str(patched_compose_path),
                 "down", "--remove-orphans",
                 cwd=str(repo_path),
                 stdout=asyncio.subprocess.DEVNULL,
@@ -1611,6 +1621,7 @@ class DynamicReachabilityAgent(BaseTool):
         repo_path: Path,
         service_name: str,
         coverage_dir: str,
+        compose_project: str,
         retries: int = 3,
         retry_wait: float = 5.0,
     ) -> bool:
@@ -1624,7 +1635,7 @@ class DynamicReachabilityAgent(BaseTool):
 
         for attempt in range(1, retries + 1):
             proc = await asyncio.create_subprocess_exec(
-                "docker", "compose", "-f", compose_path,
+                "docker", "compose", "-p", compose_project, "-f", compose_path,
                 "exec", "-T", service_name,
                 "sh", "-c",
                 # 1. Copy .coverage* from /tmp (written by COVERAGE_PROCESS_START) to mount

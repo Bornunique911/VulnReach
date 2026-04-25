@@ -1,0 +1,12 @@
+services:
+  target:
+    build:
+      context: ./target
+    ports:
+      - "5001:5001"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s

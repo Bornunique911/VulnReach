@@ -1,0 +1,90 @@
+name: eBPF E2E Tests
+
+# Runs separately from main CI — requires a real Linux kernel with eBPF support.
+# Ubuntu runners on GitHub Actions have kernel 5.15+ which supports bpftrace.
+# This workflow does NOT run on PRs by default; trigger manually or on push to main.
+
+on:
+  push:
+    branches: ["main", "master"]
+    paths:
+      - "agents/ebpf/**"
+      - "agents/agent_dynamic_reachability.py"
+      - "labs/ebpf-e2e/**"
+      - "tests/test_ebpf_e2e.py"
+      - ".github/workflows/ebpf-e2e.yml"
+  pull_request:
+    paths:
+      - "agents/ebpf/**"
+      - "agents/agent_dynamic_reachability.py"
+      - "labs/ebpf-e2e/**"
+      - "tests/test_ebpf_e2e.py"
+      - ".github/workflows/ebpf-e2e.yml"
+  workflow_dispatch:
+
+jobs:
+  ebpf-e2e:
+    name: eBPF E2E (Linux kernel ${{ matrix.kernel }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: ["default"]  # ubuntu-latest = 5.15 LTS
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bpftrace
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bpftrace
+
+      - name: Verify kernel + bpftrace
+        run: |
+          uname -r
+          bpftrace --version
+          # Dry-run: attach to openat tracepoint and exit immediately
+          sudo bpftrace -e 'tracepoint:syscalls:sys_enter_openat { exit(); }' || true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt && pip install pytest tainter
+
+      - name: Build eBPF E2E target
+        run: docker compose -f labs/ebpf-e2e/docker-compose.yml build
+
+      - name: Start target and wait for health
+        run: |
+          docker compose -f labs/ebpf-e2e/docker-compose.yml up -d
+          # Wait up to 60s for the target to be healthy
+          for i in $(seq 1 12); do
+            if curl -sf http://localhost:5001/health; then
+              echo "Target healthy"
+              break
+            fi
+            echo "Waiting... ($i/12)"
+            sleep 5
+          done
+
+      - name: Run eBPF E2E tests
+        env:
+          VULNREACH_ALLOW_DOCKER_DAEMON: "true"
+          JWT_SECRET: "ci-ebpf-e2e-secret-not-for-production"
+        run: |
+          sudo -E pytest tests/test_ebpf_e2e.py -v --tb=short
+        # sudo required for bpftrace CAP_BPF + CAP_PERFMON
+
+      - name: Collect container logs on failure
+        if: failure()
+        run: |
+          docker compose -f labs/ebpf-e2e/docker-compose.yml logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f labs/ebpf-e2e/docker-compose.yml down --remove-orphans

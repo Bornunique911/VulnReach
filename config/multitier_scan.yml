@@ -10,12 +10,12 @@ scan:
     - dynamic_reachability # Docker-based runtime coverage
 
   runtime:
-    enabled: true
-    timeout: 180           # Django multi-tier needs more startup time
-    coverage_wait: 15      # wait after Schemathesis traffic before flushing
-    container_port: 3000   # Django backend port
-    ebpf:
-      enabled: false        # non-invasive eBPF tracing via bpftrace
+    enabled: false
+    # timeout: 180           # Django multi-tier needs more startup time
+    # coverage_wait: 15      # wait after Schemathesis traffic before flushing
+    # container_port: 3000   # Django backend port
+    # ebpf:
+    #   enabled: false        # non-invasive eBPF tracing via bpftrace
     #   mode: openat         # trace file-open syscalls (portable, no USDT needed)
     #   tracer: bpftrace
     #   sidecar_mode: false  # direct tracing from vulnreach container (not sidecar)

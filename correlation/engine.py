@@ -80,6 +80,28 @@ def dynamic_reachability_verdict(has_taint_flow: bool, has_coverage_hit: bool) -
     return "NOT_OBSERVED"
 
 
+def evidence_basis_from_signals(
+    finding_type: str,
+    has_coverage_hit: bool = False,
+    has_taint_flow: bool = False,
+    call_chain_exists: bool = False,
+    import_detected: bool = False,
+) -> str:
+    """
+    Returns the strongest evidence type behind a finding.
+    Distinct from verdict — two CONFIRMED findings can differ in basis.
+    """
+    if finding_type == "dynamic" and has_coverage_hit:
+        return "dynamic"
+    if call_chain_exists:
+        return "static"
+    if has_taint_flow:
+        return "taint_only"
+    if import_detected:
+        return "import_only"
+    return "none"
+
+
 # Confidence scores per evidence type
 CONFIDENCE_SCORES = {
     "CONFIRMED": 0.95,  # Dynamic hit
@@ -163,7 +185,8 @@ def classify_reachability(
         return "UNCERTAIN", None
 
     # ── Rule 2: STATICALLY REACHABLE ─────────────────────────────────────────
-    if import_detected or has_file or has_function:
+    # Requires call-chain, function, or file evidence — import alone is insufficient.
+    if has_file or has_function or call_chain_exists:
         pkg_norm = package.lower().replace("-", "_").replace(".", "_")
         # Strip common prefixes/suffixes to normalise "python-django" → "django"
         for prefix in ("python_", "py_"):
@@ -179,8 +202,13 @@ def classify_reachability(
             return "STATICALLY_REACHABLE", "FUNCTION"
         if has_file:
             return "STATICALLY_REACHABLE", "FILE"
-        # import_detected only
-        return "STATICALLY_REACHABLE", "IMPORT"
+        # call_chain_exists but no file/function detail
+        return "STATICALLY_REACHABLE", "FILE"
+
+    # ── Rule 3b: UNCERTAIN — import detected but no structural evidence ────────
+    # Import presence does not prove a vulnerable code path is called.
+    if import_detected:
+        return "UNCERTAIN", None
 
     # ── Rule 4: NOT REACHABLE ─────────────────────────────────────────────────
     return "NOT_REACHABLE", None

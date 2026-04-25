@@ -222,11 +222,7 @@ When both static (`tainter`/`python_reachability`) and dynamic (coverage) eviden
 **Installing tainter:**
 
 ```bash
-# From the local wheel (bundled):
-pip install libs/tainter-0.1.0-py3-none-any.whl
-
-# Or from source:
-pip install -e git+https://github.com/ihrishikesh0896/tainter.git#egg=tainter
+pip install tainter
 ```
 
 **What tainter adds:**

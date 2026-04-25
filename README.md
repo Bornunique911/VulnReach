@@ -5,6 +5,8 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 
+> **Language support:** Python is fully production-ready (taint, AST, route, runtime). Java and JavaScript have functional call graph analysis and are experimental. Go, C#, and PHP are on the roadmap. See [ROADMAP.md](ROADMAP.md) for details.
+
 VulnReach builds on standard SCA output by adding reachability context — proving through static analysis, taint tracking, and live runtime coverage which of the detected CVEs can actually be reached in your application.
 
 ---
@@ -14,15 +16,18 @@ VulnReach builds on standard SCA output by adding reachability context — provi
 ### Latest Development (shipped)
 
 - Dependency-aware **parallel runner pipeline** for faster scans
-- **Monorepo/multi-language reachability** (Python, Java, JavaScript, Go, C#, PHP)
+- **Python reachability** — production-ready (taint, AST, route, runtime layers all functional)
+- **Java reachability** — functional call graph with Maven/Gradle dependency parsing (experimental)
+- **JavaScript reachability** — functional call graph with route entry point detection (experimental)
+- **Scan cancellation** — `POST /scan/{id}/cancel` stops in-progress scans
 - Stable scan response contract: `summary` + classified buckets on `GET /scan/{id}`
 - Shared scan response normalization across API and package local mode (parity)
 - Secure-by-default runtime boundary:
   - base compose runs without Docker socket mount
-  - dynamic scans require explicit opt-in
+  - dynamic scans require explicit opt-in via `VULNREACH_ALLOW_DOCKER_DAEMON=true`
   - runtime profile uses restricted `docker-socket-proxy`
 - Deterministic fixture quality gates for Java/JavaScript/Go in CI
-- Threat model + incubator application readiness checklist published
+- OWASP Incubator application submitted
 
 ### Experimental
 
@@ -165,6 +170,7 @@ Full methodology, evidence chain detail, and package-level breakdown: [docs/benc
 
 ### Contributors
 
+- [ROADMAP.md](ROADMAP.md) — planned features, known limitations, language support status
 - [docs/development.md](docs/development.md) — internals, agents, storage, extension points
 - [OWASP.md](OWASP.md) — OWASP incubator application notes
 - [SECURITY.md](SECURITY.md) — vulnerability disclosure and key rotation
@@ -183,7 +189,7 @@ Full methodology, evidence chain detail, and package-level breakdown: [docs/benc
 
 Optional (all skip gracefully if absent):
 - `semgrep` — `pip install semgrep`
-- `tainter` — see [development guide](docs/development.md#tainter--optional-taint-analysis)
+- `tainter` — `pip install tainter` (taint-flow analysis; see [development guide](docs/development.md#tainter--optional-taint-analysis))
 
 ---
 

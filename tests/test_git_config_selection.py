@@ -103,6 +103,62 @@ def test_runner_stops_after_fatal_git_error():
     assert [result.tool_name for result in results] == ["git"]
 
 
+def test_runner_refreshes_tools_after_git_discovers_repo_config(monkeypatch, tmp_path):
+    class _Storage:
+        def store_raw_output(self, scan_id, tool_name, payload):
+            return None
+
+        def store_vulnerabilities(self, scan_id, findings):
+            return None
+
+        def store_reachability(self, scan_id, findings):
+            return None
+
+        def store_routes(self, scan_id, findings):
+            return None
+
+    runner = AgentRunner(_Storage())
+    initial_config = default_config()
+    initial_config.scan.tools = ["git", "trivy"]
+
+    discovered_config = default_config()
+    discovered_config.scan.tools = ["trivy", "route_extractor"]
+    calls = []
+
+    async def _git(_context):
+        calls.append("git")
+        _context.repo_path = str(tmp_path)
+        _context.config = discovered_config
+        _context.config_path = str(tmp_path / "vulnreach.yaml")
+        return AgentResult(tool_name="git", findings=[], metadata={"status": "ok"})
+
+    async def _trivy(_context):
+        calls.append("trivy")
+        return AgentResult(tool_name="trivy", findings=[], metadata={"status": "ok"})
+
+    async def _route_extractor(_context):
+        calls.append("route_extractor")
+        return AgentResult(tool_name="route_extractor", findings=[], metadata={"status": "ok"})
+
+    runner.git.run = _git
+    runner.trivy.run = _trivy
+    runner.route_extractor.run = _route_extractor
+    monkeypatch.setattr(runner, "_detect_project_languages", lambda context: ["python"])
+
+    results = asyncio.run(
+        runner.run_all(
+            ScanContext(
+                repo_url="https://example.invalid/repo.git",
+                config=initial_config,
+                scan_id="scan-5",
+            )
+        )
+    )
+
+    assert calls == ["git", "trivy", "route_extractor"]
+    assert [result.tool_name for result in results] == ["git", "trivy", "route_extractor"]
+
+
 def test_orchestrator_marks_scan_failed_for_fatal_git_config_error():
     class _Storage:
         def __init__(self) -> None:

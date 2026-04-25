@@ -30,6 +30,27 @@ def _print_summary(scan: dict) -> None:
     console.print(table)
 
 
+def _print_coverage_warning(scan: dict) -> None:
+    coverage = scan.get("analysis_coverage") or {}
+    skipped = coverage.get("tools_skipped") or {}
+    errored = coverage.get("tools_errored") or {}
+    if not skipped and not errored:
+        return
+
+    console.print()
+    console.print("[bold yellow][!] Partial analysis — not all evidence layers were collected[/bold yellow]")
+    for tool, reason in skipped.items():
+        console.print(f"    [yellow]skipped[/yellow]  {tool}: {reason}")
+    for tool, reason in errored.items():
+        console.print(f"    [red]errored[/red]   {tool}: {reason}")
+
+    layers = coverage.get("evidence_layers") or {}
+    missing = [name for name, ran in layers.items() if not ran]
+    if missing:
+        console.print(f"    [dim]Missing layers: {', '.join(missing)}[/dim]")
+    console.print("    [dim]Results may under-report reachability. Check docs/configuration.md for setup.[/dim]")
+
+
 @click.command()
 @click.option("--repo-path", default=None, help="Local path to the repository.")
 @click.option("--repo-url", default=None, help="Remote repository URL (git clone).")
@@ -87,6 +108,7 @@ def scan(
         )
 
     _print_summary(scan_data)
+    _print_coverage_warning(scan_data)
 
     # Emit scan_id to stdout for scripting
     click.echo(scan_data.get("scan_id", ""))

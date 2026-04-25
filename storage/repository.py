@@ -199,6 +199,7 @@ class PostgresRepository(StorageRepository):
 
         CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
         CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash);
+        CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);
         """
         with self._conn() as conn:
             with conn.cursor() as cur:
@@ -331,6 +332,7 @@ class PostgresRepository(StorageRepository):
             """,
             "CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash);",
+            "CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);",
         ]
         with self._conn() as conn:
             with conn.cursor() as cur:
@@ -701,6 +703,27 @@ class PostgresRepository(StorageRepository):
                     (key_hash,),
                 )
                 return cur.fetchone()
+
+    def get_api_key_candidates_by_prefix(self, key_prefix: str) -> List[Dict[str, Any]]:
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        ak.id AS key_id,
+                        ak.key_hash,
+                        u.id AS user_id,
+                        u.username,
+                        u.role
+                    FROM api_keys ak
+                    JOIN users u ON u.id = ak.user_id
+                    WHERE ak.key_prefix = %s
+                      AND ak.revoked_at IS NULL
+                      AND (ak.expires_at IS NULL OR ak.expires_at > NOW())
+                    """,
+                    (key_prefix,),
+                )
+                return list(cur.fetchall() or [])
 
     def touch_api_key_last_used(self, key_id: str) -> None:
         with self._conn() as conn:

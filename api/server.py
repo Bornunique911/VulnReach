@@ -26,6 +26,7 @@ from api.auth import (
     hash_password,
     require_user,
     set_api_key_validator,
+    verify_api_key,
     verify_password,
 )
 from vulnreach.scan_response import augment_scan_response
@@ -153,17 +154,21 @@ async def on_startup() -> None:
 
 
 def _resolve_api_key_principal(raw_key: str) -> UserPrincipal | None:
-    row = storage.get_user_for_api_key(hash_api_key(raw_key))
-    if not row:
-        return None
-    key_id = str(row.get("key_id") or "")
-    if key_id:
-        storage.touch_api_key_last_used(key_id)
-    return UserPrincipal(
-        id=str(row["user_id"]),
-        username=row["username"],
-        role=row["role"],
-    )
+    # Extract prefix (e.g., "vrk_ab12cd34") for prefix-based lookup.
+    # This is needed because salted hashes are non-deterministic.
+    prefix = raw_key.split(".")[0] if "." in raw_key else raw_key
+    candidates = storage.get_api_key_candidates_by_prefix(prefix)
+    for row in candidates:
+        if verify_api_key(raw_key, row.get("key_hash", "")):
+            key_id = str(row.get("key_id") or "")
+            if key_id:
+                storage.touch_api_key_last_used(key_id)
+            return UserPrincipal(
+                id=str(row["user_id"]),
+                username=row["username"],
+                role=row["role"],
+            )
+    return None
 
 
 set_api_key_validator(_resolve_api_key_principal)
