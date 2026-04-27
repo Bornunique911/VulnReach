@@ -5,6 +5,24 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 
+## Demo
+
+[![VulnReach Demo](https://img.youtube.com/vi/d0lCo1nJzVM/maxresdefault.jpg)](https://youtu.be/d0lCo1nJzVM?si=ZDzG6kxvuCosQ7ts)
+
+### Step 1 — SCA surfaces 74 CVEs across dependencies
+![Trivy SCA output — 74 vulnerabilities detected](docs/screenshots/only_trivy_SCA.png)
+
+### Step 2 — VulnReach proves which ones are actually reachable
+![Fix Plan — 7 packages, 50 confirmed reachable CVEs with upgrade targets](docs/screenshots/package_to_upgrade_vs_CVE_count.png)
+
+---
+
+### Findings — evidence chain per CVE
+![Dynamically reachable findings with full evidence chain](docs/screenshots/dynamic_reachability_landing.png)
+
+### Dashboard — 42 confirmed reachable across 9 repos
+![VulnReach Dashboard](docs/screenshots/scan_page.png)
+
 > **Language support:** Python is fully production-ready (taint, AST, route, runtime). Java and JavaScript have functional call graph analysis and are experimental. Go, C#, and PHP are on the roadmap. See [ROADMAP.md](ROADMAP.md) for details.
 
 VulnReach builds on standard SCA output by adding reachability context — proving through static analysis, taint tracking, and live runtime coverage which of the detected CVEs can actually be reached in your application.
