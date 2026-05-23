@@ -17,12 +17,31 @@ This document tracks planned improvements, known limitations, and the current st
 
 ---
 
+## API Surface
+
+| Endpoint family | Status | Notes |
+|---|---|---|
+| `POST /scan`, `GET /scan/{id}`, `POST /scan/{id}/cancel`, `DELETE /scan/{id}` | Production-ready | Scan lifecycle |
+| `GET /scan/{id}/raw[/{tool}]`, `GET /scans` | Production-ready | Inspection |
+| `GET /scan/{id}/export/pdf` | Production-ready | PDF report |
+| `GET /scan/{id}/graph/{cve_id}` | Production-ready | Mermaid call-chain graph |
+| `POST /scan/{id}/explain/{cve_id}` | Production-ready | Human-readable summary (LLM-optional, offline default) |
+| `POST /findings/{id}/next-steps` | **Production-ready (new)** | Analyst augmentation: deterministic verdict + LLM-generated next steps. Lazy / on-demand; LLM failures degrade gracefully. See [docs/api.md](docs/api.md#post-findingsfinding_idnext-steps). |
+| `POST /login`, `/api-keys/*` | Production-ready | Auth |
+
+The "API interface" milestone originally slated for proposal-Phase 3 is complete and operating. Subsequent AI-augmentation siblings (`/explain`, `/validate`, `/remediate`) reuse the same `EvidenceGraphBuilder` + `NextStepsReasoner` plumbing.
+
+---
+
 ## Near-term (next 1–2 releases)
 
 - **Taint-flow for Java** — extend tainter or add a standalone Java taint analyzer; current call graph + eBPF runtime coverage is solid, gap is source-to-sink tracing
 - **Taint-flow for JavaScript** — same gap; call graph and route detection are in place
 - **SBOM ingestion** — accept CycloneDX / SPDX SBOMs as scan input alongside live repos; currently only Trivy output is supported
 - **Workspace isolation** — restructure `GitAgent` so clones land in `{workdir}/clone/` and VulnReach-generated files (patched compose, coverage) live in `{workdir}/` alongside; eliminates the DooD path-resolution constraint for local path scans
+- **`POST /findings/{id}/explain`** — narrative-style finding explanation (deeper than `/scan/{id}/explain/{cve_id}`'s offline summary), built on the same `EvidenceGraph` contract used by `/next-steps`
+- **`POST /findings/{id}/validate`** — synthesise a runtime probe (HTTP request, payload skeleton, expected signal) the user can fire against a target to confirm reachability for a non-confirmed finding
+- **`POST /findings/{id}/remediate`** — focused upgrade-and-patch plan; isolates upgrade logic from the broader next-steps surface so it can be wired into CI / PR automation
 
 ## Medium-term
 
@@ -30,6 +49,9 @@ This document tracks planned improvements, known limitations, and the current st
 - **JavaScript eBPF coverage** — wire Node.js USDT probes (`node:method__entry` or V8 coverage) through the existing `java_method`-style parser path; static call graph already in place
 - **Go, C#, PHP reachability** — extend multi-language framework to remaining languages
 - **Coverage flush configurability** — `runtime.coverage_flush_retries` and `runtime.coverage_flush_retry_wait` are implemented internally; expose as config schema keys
+- **EvidenceGraph schema stabilisation** — promote `EVIDENCE_GRAPH_VERSION` to a published contract once the AI sibling endpoints have shaken out the field set
+- **AI evaluation harness** — pinned-fixture eval set + scoring for `/next-steps` (and siblings) output quality, before this layer moves from lazy/on-demand to eager-per-scan
+- **Persistent next-steps cache** — current LRU is in-memory and bounded to 512 entries; promote to disk-backed storage once cache hit rate + cost profile justify it
 
 ## Longer-term
 

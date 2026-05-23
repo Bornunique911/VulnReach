@@ -24,6 +24,19 @@ Status legend:
 - [x] Multi-language reachability path wired into runner.
 - [x] `GET /scan/{id}` contract returns summary + classified buckets.
 - [x] Deterministic Java/JavaScript/Go fixture tests in CI.
+- [x] Java runtime confirmation via `hotspot:method__entry` eBPF USDT probes (Log4Shell / Text4Shell / SnakeYAML E2E lab in `labs/ebpf-e2e-java/`).
+- [x] AI augmentation layer is architecturally separated from the deterministic engine: the LLM never re-derives, overrides, or contradicts a verdict; consumes a versioned `EvidenceGraph` rather than raw scanner JSON; failures cannot fail scans.
+
+## P0 AI / LLM Safety
+
+The AI layer is deliberately scoped to analyst augmentation only. Reviewers may verify these properties directly:
+
+- [x] **Read-only over the verdict** — `agents/agent_next_steps.py` raises `ValueError` if a finding has no deterministic verdict; the system prompt explicitly forbids re-derivation.
+- [x] **No raw scanner JSON in prompts** — only the normalised `EvidenceGraph` (`correlation/evidence_graph.py`) is sent to the LLM. The graph schema is versioned (`EVIDENCE_GRAPH_VERSION`).
+- [x] **No scan-time LLM dependency** — `POST /findings/{id}/next-steps` is on-demand. Scans complete without ever invoking an LLM; absence or failure of `ANTHROPIC_API_KEY` cannot fail a scan.
+- [x] **Graceful degradation** — LLM errors return `status="degraded"` with the EvidenceGraph still attached; analysts retain value when the AI is down.
+- [x] **Versioned, cached, auditable** — every response carries `prompt_version`, `evidence_graph_version`, and `evidence_hash`. Cache key composes all three, so prompt or schema bumps invalidate stale entries deterministically.
+- [~] Pinned-fixture eval set for `/next-steps` output quality (planned; gates the lazy → eager promotion).
 
 ## P0 Threat Modeling and Documentation
 
