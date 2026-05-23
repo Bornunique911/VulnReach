@@ -46,6 +46,7 @@ VulnReach builds on standard SCA output by adding reachability context — provi
   - runtime profile uses restricted `docker-socket-proxy`
 - Deterministic fixture quality gates for Java/JavaScript/Go in CI
 - OWASP Incubator application submitted
+- **AI next-steps endpoint** — `POST /findings/{id}/next-steps` produces analyst-facing remediation guidance (immediate actions, validation probes, upgrade paths, monitoring) for a deterministic finding. Lazy / on-demand: scans never call the LLM, and LLM failures degrade gracefully. The deterministic verdict is read-only. See [docs/api.md](docs/api.md#post-findingsfinding_idnext-steps).
 
 ### Experimental
 

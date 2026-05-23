@@ -7,7 +7,7 @@ dist/
 tests/
 docs/
 .hypothesis/
-labs/
+# labs/
 output/
 reviews/
 scripts/

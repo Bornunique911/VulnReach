@@ -176,3 +176,63 @@ gantt
 | `pytest_coverage` in tools AND no pytest-cov installed | PytestCoverageAgent skips gracefully |
 | `multi_language_reachability` in tools | Runs analyzers for all detected repo languages (monorepo-aware), not just one primary |
 | `pipeline_status == BLOCK` | Scan marked `blocked`, CI gate fails |
+
+---
+
+## AI Layer (optional, on-demand)
+
+VulnReach separates **deterministic correlation** (source of truth) from
+**AI augmentation** (analyst guidance only).
+
+```mermaid
+flowchart LR
+    subgraph DET ["Deterministic pipeline (always runs)"]
+        SCAN[POST /scan] --> AGENTS[agents] --> CORR[correlation.engine] --> FINDING[(finding\nverdict + evidence)]
+    end
+
+    subgraph AI ["AI layer (lazy, optional)"]
+        REQ[POST /findings/&#123;id&#125;/next-steps] --> EGB[EvidenceGraphBuilder]
+        FINDING -.read-only.-> EGB
+        EGB --> CACHE{cache hit?}
+        CACHE -- yes --> RESP[response]
+        CACHE -- no --> NSR[NextStepsReasoner] --> ANTH[Anthropic Claude]
+        ANTH -- ok --> STORE[cache &amp; return] --> RESP
+        ANTH -- failure --> DEG[status=degraded\nreturn graph only] --> RESP
+    end
+```
+
+**Hard rules**
+
+1. The scan pipeline **never** calls the LLM. Scans stay fast, cheap, reproducible, and fault-tolerant.
+2. The LLM **never** sees raw scanner JSON. It consumes only the normalised `EvidenceGraph` (`correlation/evidence_graph.py`).
+3. The LLM **never** overrides verdicts. It receives the deterministic verdict as input and is prompted to treat it as ground truth.
+4. LLM failures cannot fail the endpoint — degraded responses still return the `EvidenceGraph` so analysts retain value when the AI is down.
+
+**Versioned contracts**
+
+| Contract | Constant | Bumped when |
+|---|---|---|
+| EvidenceGraph schema | `EVIDENCE_GRAPH_VERSION` in `correlation/evidence_graph.py` | Graph shape changes (new fields, renamed fields, semantic shifts) |
+| System prompt + I/O schema | `PROMPT_VERSION` in `agents/agent_next_steps.py` | Prompt rewrite, output schema change |
+
+Both are echoed on every response and composed into the cache key
+(`finding_id + evidence_hash + prompt_version`) so a bump on either
+side invalidates stale entries automatically.
+
+**Why on-demand only (for now)**
+
+This layer stays lazy / per-request until:
+
+- prompts stabilise
+- the EvidenceGraph schema stabilises
+- evaluation metrics exist for output quality
+- caching strategy matures (in-memory LRU today)
+- cost profile under real-world finding volume is understood
+
+The current `POST /findings/{id}/next-steps` is intentionally the only
+AI endpoint. Future siblings on the same plumbing are planned:
+
+- `POST /findings/{id}/explain` — narrative-style explanation
+- `POST /findings/{id}/validate` — synthesise a runtime probe to confirm
+- `POST /findings/{id}/remediate` — focused upgrade-and-patch plan
+

@@ -214,6 +214,30 @@ def _has_python_usdt(pid: int) -> bool:
         return False
 
 
+def _find_libjvm(pid: int) -> str | None:
+    """Return absolute path of libjvm.so for *pid* by scanning /proc/{pid}/maps."""
+    try:
+        maps = Path(f"/proc/{pid}/maps").read_text(errors="replace")
+        for line in maps.splitlines():
+            if "libjvm.so" in line:
+                return line.split()[-1]
+    except Exception:
+        pass
+    return None
+
+
+def _has_java_hotspot(libjvm_path: str) -> bool:
+    """Return True if libjvm.so exposes hotspot:method__entry USDT probes."""
+    try:
+        result = subprocess.run(
+            ["readelf", "-n", libjvm_path],
+            capture_output=True, text=True, timeout=5,
+        )
+        return "hotspot" in result.stdout and "method__entry" in result.stdout
+    except Exception:
+        return False
+
+
 def build_probe_script(pid: int, runtime: str) -> tuple[str, str]:
     """Return (bpftrace_script, output_parser_name).
 
@@ -232,9 +256,23 @@ def build_probe_script(pid: int, runtime: str) -> tuple[str, str]:
         )
         return script, "python_line"
 
+    if runtime in ("java", "auto"):
+        libjvm = _find_libjvm(pid)
+        if libjvm and _has_java_hotspot(libjvm):
+            print(f"  Probe: usdt hotspot:method__entry  (USDT confirmed on PID {pid})")
+            script = (
+                f"usdt:{libjvm}:hotspot:method__entry\n"
+                "{\n"
+                '  printf("method:%s:%s\\n", str(arg1), str(arg2));\n'
+                "}\n"
+            )
+            return script, "java_method"
+        if runtime == "java":
+            print("  Probe: openat  (hotspot USDT unavailable — add -XX:+ExtendedDTraceProbes)")
+
     if runtime == "python":
         print("  Probe: openat  (python binary has no USDT probes — use ubuntu:22.04 target for line coverage)")
-    else:
+    elif runtime not in ("java", "auto"):
         print(f"  Probe: openat  (runtime={runtime})")
 
     script = (
@@ -353,6 +391,17 @@ def parse_output(raw: str, parser: str, runtime: str) -> dict:
             m = pattern.match(row.strip())
             if m:
                 hits[m.group(1)]["lines"].add(int(m.group(2)))
+
+    elif parser == "java_method":
+        # Input: "method:com/example/Foo:bar"
+        # Resolving to line numbers requires javap; store function-level coverage
+        # which is sufficient for DYNAMICALLY_REACHABLE correlation.
+        pattern = re.compile(r"^method:(.+):(.+)$")
+        for row in raw.splitlines():
+            m = pattern.match(row.strip())
+            if m:
+                class_slash, method = m.group(1), m.group(2)
+                hits[class_slash + ".java"]["funcs"].add(method)
 
     elif parser == "openat":
         pattern = re.compile(r"^open:(.+)$")

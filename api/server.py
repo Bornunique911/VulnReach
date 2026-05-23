@@ -499,6 +499,60 @@ async def explain_finding(
     return {"scan_id": scan_id, "cve_id": cve_id, "explanation": explanation}
 
 
+class NextStepsRequest(BaseModel):
+    bypass_cache: bool = False
+    model: str | None = None
+
+
+_next_steps_service = None
+
+
+def _get_next_steps_service():
+    """Lazy singleton so missing ANTHROPIC_API_KEY does not crash startup."""
+    global _next_steps_service
+    if _next_steps_service is None:
+        from api.next_steps import NextStepsService
+        _next_steps_service = NextStepsService(storage)
+    return _next_steps_service
+
+
+@app.post("/findings/{finding_id}/next-steps")
+async def finding_next_steps(
+    finding_id: str,
+    body: NextStepsRequest | None = None,
+    principal: UserPrincipal = Depends(require_user),
+):
+    """On-demand analyst augmentation for a deterministic finding.
+
+    ``finding_id`` is ``<scan_id>:<cve_id>`` (optionally
+    ``<scan_id>:<cve_id>:<package>``). The verdict is owned by the
+    correlation engine — this endpoint never mutates it.
+
+    LLM failures degrade gracefully: the response still returns the
+    EvidenceGraph + cache metadata with ``status="degraded"``.
+    """
+    from api.next_steps import parse_finding_id
+
+    try:
+        scan_id, _cve_id, _pkg = parse_finding_id(finding_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # Reuses the existing scan ownership check (404 on miss to avoid enumeration).
+    _fetch_scan_owned(scan_id, principal)
+
+    body = body or NextStepsRequest()
+    service = _get_next_steps_service()
+    try:
+        return service.get_next_steps(
+            finding_id,
+            bypass_cache=body.bypass_cache,
+            model=body.model,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
 @app.get("/scan/{scan_id}/export/pdf")
 async def export_scan_pdf(scan_id: str, principal: UserPrincipal = Depends(require_user)):
     """Generate and download a PDF report for a scan."""

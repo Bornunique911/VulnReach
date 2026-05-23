@@ -538,6 +538,36 @@ class DynamicReachabilityAgent(BaseTool):
             if re.match(r"^\s*FROM\s+", line, re.IGNORECASE):
                 final_stage_start = i
 
+        # --- Non-Python base image guard ---
+        # If the final stage is based on a Java/Node/Go/Rust image, Python is not
+        # available in the container, so injecting "RUN python -c ..." would break
+        # the Docker build. Return the original content unchanged — the container
+        # will still start and Schemathesis will drive traffic; we simply won't
+        # collect Python coverage (which is fine for non-Python runtimes).
+        _NON_PYTHON_BASE_PREFIXES = (
+            "eclipse-temurin", "openjdk", "amazoncorretto", "adoptopenjdk",
+            "azul/zulu", "bellsoft/liberica",
+            "node:", "node-alpine", "node-slim",
+            "golang:", "go-alpine",
+            "rust:", "rust-alpine",
+            "mcr.microsoft.com/dotnet", "microsoft/dotnet",
+            "ruby:", "php:",
+        )
+        final_from_line = lines[final_stage_start] if final_stage_start < len(lines) else ""
+        _base_match = re.search(r"FROM\s+(\S+)", final_from_line, re.IGNORECASE)
+        if _base_match:
+            _base = _base_match.group(1).lower().split(":")[0]  # strip tag
+            _base_with_tag = _base_match.group(1).lower()
+            if any(
+                _base_with_tag.startswith(p.lower()) or _base.startswith(p.lower().split(":")[0])
+                for p in _NON_PYTHON_BASE_PREFIXES
+            ):
+                logger.info(
+                    f"[dynamic][patch] Non-Python base image '{_base_match.group(1)}' — "
+                    "skipping coverage injection; container will start but no Python coverage"
+                )
+                return None, "non_python_base_image"
+
         # Detect WORKDIR from the final stage (default /app for safety)
         detected_workdir = "/app"
         for line in lines[final_stage_start:]:
@@ -1267,6 +1297,21 @@ class DynamicReachabilityAgent(BaseTool):
                 or pypi_name
             ).lower()
 
+            # For Maven coordinates (group:artifact) build alternate path-style match keys
+            # so that e.g. "org.apache.logging.log4j:log4j-core" matches against eBPF
+            # coverage paths like "org/apache/logging/log4j/core/Logger.java".
+            # Two alternatives are generated:
+            #   1. group as Unix path  — "org/apache/logging/log4j"
+            #   2. artifact keywords  — tokens from "log4j-core" with len ≥ 5: ["log4j"]
+            # "core", "text", "api", etc. are intentionally excluded (too generic).
+            _maven_alt_names: list[str] = []
+            if ":" in import_name:
+                _group_part, _artifact_part = import_name.split(":", 1)
+                _maven_alt_names.append(_group_part.replace(".", "/"))
+                for _kw in re.split(r"[.\-]", _artifact_part):
+                    if len(_kw) >= _MIN_PKG_MATCH_LEN + 1:
+                        _maven_alt_names.append(_kw)
+
             cves = vuln.get("cve_id", [])
             if isinstance(cves, str):
                 cves = [cves]
@@ -1278,6 +1323,8 @@ class DynamicReachabilityAgent(BaseTool):
             # files appear in coverage data. Match against full paths (hit_files_full)
             # so that e.g. "requests" matches
             # "/usr/local/lib/python3.11/site-packages/requests/adapters.py".
+            # For Java/Maven packages the Maven alt names are also checked against
+            # hit_files_full (e.g. "log4j" in "org/apache/logging/log4j/core/Logger.java").
             dynamically_hit = False
             if len(import_name) >= _MIN_PKG_MATCH_LEN:
                 dynamically_hit = (
@@ -1287,6 +1334,11 @@ class DynamicReachabilityAgent(BaseTool):
                         f"/site-packages/{import_name}" in f.lower()
                         or f"/site-packages/{import_name}/" in f.lower()
                         for f in hit_files_full
+                    )
+                    or any(
+                        any(alt in f.lower() for f in hit_files_full)
+                        for alt in _maven_alt_names
+                        if len(alt) >= _MIN_PKG_MATCH_LEN
                     )
                 )
 

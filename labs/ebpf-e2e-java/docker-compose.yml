@@ -1,0 +1,12 @@
+services:
+  target:
+    build:
+      context: .          # pom.xml + src/ + Dockerfile are at lab root
+    ports:
+      - "5002:5002"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -qO- http://localhost:5002/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
