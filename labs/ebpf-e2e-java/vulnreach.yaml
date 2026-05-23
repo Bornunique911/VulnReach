@@ -1,0 +1,18 @@
+scan:
+  tools:
+    - trivy
+    - multi_language_reachability
+    - dynamic_reachability
+
+  runtime:
+    enabled: true
+    timeout: 120
+    coverage_wait: 10 
+    container_port: 5002          # App.java listens here
+
+    ebpf:
+      enabled: false              # eBPF requires Linux; use compose coverage mode on macOS
+
+risk:
+  exposure: public
+  data_sensitivity: high

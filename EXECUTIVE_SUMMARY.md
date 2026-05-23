@@ -50,8 +50,9 @@ Risk scores are weighted by reachability tier and endpoint exposure, giving team
 | Runtime coverage confirmation | No | No | **Yes** |
 | Active exploit confirmation (DAST) | No | No | **Yes** |
 | LLM-adaptive payload generation | No | No | **Yes** |
-| eBPF non-invasive tracing | No | No | **Yes** |
+| eBPF non-invasive tracing | No | No | **Yes (Python + Java)** |
 | CI/CD policy gate on confirmed findings | No | Partial | **Yes** |
+| LLM-assisted triage with deterministic verdict guarantee | No | No | **Yes** — AI layer is read-only over the verdict and degrades gracefully |
 
 Endor Labs and Snyk can tell you a code path *might* exist. VulnReach is the only tool that **proves** the path executes at runtime and then attempts to exploit it — delivering a finding with a working payload, a request/response snapshot, and a confidence score.
 
@@ -69,4 +70,15 @@ Endor Labs and Snyk can tell you a code path *might* exist. VulnReach is the onl
 
 VulnReach is at functional MVP. The full pipeline — SCA, taint analysis, static call graph, dynamic coverage, and LLM-steered DAST — is operational against Python/Flask and Python/FastAPI targets. A REST API with JWT auth, a web dashboard, and PDF report export are production-ready. Air-gapped deployment is supported via local LLMs (Ollama).
 
-The immediate roadmap targets Node.js and Java language support, cloud-native SBOM ingestion, and a SaaS offering alongside the self-hosted open-source distribution.
+**Java runtime confirmation** — `hotspot:method__entry` USDT-based eBPF tracing now confirms Java CVE execution at runtime (Log4Shell, Text4Shell, SnakeYAML deserialisation), bringing Java findings into the `DYNAMICALLY_REACHABLE` tier alongside Python. Static call-graph + Maven/Gradle dependency parsing remain Java's static layer.
+
+**Analyst-augmentation AI layer (separate from the scan pipeline)** — `POST /findings/{id}/next-steps` produces evidence-cited next-step guidance per finding: immediate actions, validation probes, upgrade paths, monitoring recommendations, false-positive signals, and an attack-surface summary. By architectural rule:
+
+- the deterministic correlation engine remains the source of truth — the LLM never re-derives or overrides a verdict;
+- the LLM consumes a normalised `EvidenceGraph`, never raw scanner JSON, so the prompt surface is stable and auditable;
+- the AI layer is lazy / on-demand, runs only when an analyst hits the endpoint, and **LLM failures cannot fail scans** (graceful degradation returns the EvidenceGraph alone);
+- responses are versioned (`prompt_version`, `evidence_graph_version`) and cached on `finding_id + evidence_hash + prompt_version` so schema bumps invalidate stale entries.
+
+This separation is deliberate: scans stay deterministic, fast, cheap, and reproducible; the AI layer adds value to triage without becoming a dependency for correctness.
+
+The immediate roadmap targets Node.js taint-flow, cloud-native SBOM ingestion, AI sibling endpoints (`/explain`, `/validate`, `/remediate`) on the same `EvidenceGraph` plumbing, and a SaaS offering alongside the self-hosted open-source distribution.

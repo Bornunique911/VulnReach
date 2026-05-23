@@ -1,5 +1,48 @@
 # Changelog
 
+## [Unreleased] — 2026-05-19
+
+### Added
+
+#### AI Next-Steps Endpoint (`POST /findings/{id}/next-steps`)
+- **`agents/agent_next_steps.py`** — `NextStepsReasoner` calls Anthropic Claude with the locked `VulnReach AI NextStepsReasoner` system prompt and a normalised EvidenceGraph. **The deterministic verdict is read-only** — the LLM never re-derives it. Returns strict JSON: `summary`, `risk_context`, `immediate_actions`, `investigation_steps`, `recommended_validation`, `remediation { upgrade_path, code_changes, workarounds }`, `monitoring_recommendations`, `false_positive_signals`, `missing_evidence`, `analyst_notes`, `attack_surface_summary`. Temperature 0.1, 30s timeout, `PROMPT_VERSION="1.0.0"`. Token usage + latency logged per call.
+- **`correlation/evidence_graph.py`** — `EvidenceGraphBuilder.build(finding_id)` normalises CVE / dependency / framework / routes / imports / call paths / taint paths / runtime events / snippets / per-tier evidence strengths into a fixed shape. The LLM consumes only this — never raw scanner JSON. `EVIDENCE_GRAPH_VERSION="1.0.0"`. Provides `evidence_hash()` for cache keying and `parse_finding_id()` for `<scan_id>:<cve_id>[:<package>]` decoding.
+- **`api/next_steps.py`** — `NextStepsService` wires builder → cache → reasoner. Bounded in-memory LRU (512 entries) keyed by `finding_id + evidence_hash + prompt_version` so prompt or graph-schema bumps invalidate correctly. Failures are **not cached** (retryable). All exceptions caught → response stays well-formed with `status="degraded"`, `result=null`, and the EvidenceGraph still attached.
+- **`api/server.py`** — `POST /findings/{finding_id}/next-steps` mounted with `NextStepsRequest { bypass_cache, model }`. Lazy reasoner construction so missing `ANTHROPIC_API_KEY` cannot crash startup. Reuses `_fetch_scan_owned` for auth (404 on miss to avoid scan-id enumeration).
+- **Scan pipeline untouched** — the endpoint is on-demand and optional. Scans remain fast, cheap, reproducible, and fault-tolerant. LLM failures cannot fail scans.
+- Response envelope includes `evidence_graph_version`, `prompt_version`, `evidence_hash`, `cache: "hit" | "miss"`, and full `telemetry { model, latency_ms, input_tokens, output_tokens }` on success.
+- New env var: `VULNREACH_NEXTSTEPS_MODEL` (defaults to `claude-sonnet-4-5-20241022`).
+
+#### Java eBPF E2E Lab
+- **`labs/ebpf-e2e-java/`** — New Java E2E lab for full pipeline testing. Target app is a plain-JDK HTTP server with three intentionally vulnerable dependencies: `log4j-core 2.14.1` (CVE-2021-44228), `commons-text 1.9` (CVE-2022-42889), `snakeyaml 1.30` (CVE-2022-1471). Exposes five routes: `/health` (negative baseline), `/log` (exercises log4j), `/substitute` (exercises commons-text), `/yaml` (exercises snakeyaml), `/nolog` (imports all three but calls none — negative control).
+- **`labs/ebpf-e2e-java/openapi.json`** — OpenAPI 3.0.3 spec describing all five routes with query parameters and response schemas. Used by Schemathesis to drive traffic during dynamic scans.
+- **`labs/ebpf-e2e-java/vulnreach.yaml`** — Scan config for the Java lab: `container_port: 5002`, `ebpf.enabled: true`, `ebpf.sidecar_mode: true`, `ebpf.mode: usdt`.
+- **`labs/ebpf-e2e-java/target/Dockerfile`** — Eclipse Temurin 17 JDK image; builds a fat JAR via Maven Shade Plugin; starts with `-XX:+ExtendedDTraceProbes` to enable `hotspot:method__entry` USDT probes.
+- **`labs/ebpf-e2e-java/target/pom.xml`** — Maven fat-jar build with the three intentionally vulnerable dependencies. Do not upgrade versions in this lab.
+
+#### Java eBPF Sidecar Support (`agents/ebpf/sidecar/sidecar_entrypoint.py`)
+- **`_find_libjvm(pid)`** — Reads `/proc/{pid}/maps` to locate `libjvm.so` for a running JVM process.
+- **`_has_java_hotspot(libjvm_path)`** — Runs `readelf -n` on `libjvm.so` to confirm `hotspot:method__entry` USDT probes are present.
+- **Java branch in `build_probe_script()`** — When `runtime` is `"java"` or `"auto"`, checks for `libjvm.so` and USDT probes; emits a `usdt:{libjvm}:hotspot:method__entry` bpftrace script that prints `method:{class_slash}:{method_name}` per call. Falls back to `openat` with a diagnostic message when USDT is unavailable (e.g. JVM started without `-XX:+ExtendedDTraceProbes`).
+- **`java_method` parser in `parse_output()`** — Parses `method:com/example/Foo:bar` lines into `NormalisedCoverage` format (`executed_functions` keyed by `class/Foo.java`). Executed lines left empty; function presence is sufficient for correlation.
+
+#### Maven Coordinate Correlation Fix (`agents/agent_dynamic_reachability.py`)
+- **`_maven_alt_names` in `_correlate()`** — When a package name contains `:` (Maven coordinate), extracts the group-path (`org.apache.logging.log4j` → `org/apache/logging/log4j`) and significant artifact keywords (`log4j-core` → `log4j`, `core`) as alternative match tokens. Strategy 1 (direct library path match) now correctly links Maven coordinates to coverage paths like `org/apache/logging/log4j/core/Logger.java`.
+
+#### Tests
+- **`tests/test_java_docker.py`** — 34 tests across four classes: `TestJavaDockerEndpoints` (6, Docker) HTTP smoke tests for all five routes; `TestJavaStaticReachability` (8, no deps) verifies `JavaReachabilityAnalyzer` detects all three packages with usage context; `TestJavaDynamicCoverage` (8, no deps) verifies `parse_output` → `NormalisedCoverage` → coverage.py conversion for both all-routes and nolog-only eBPF output; `TestJavaFullPipeline` (12, Docker) exercises the complete static + simulated-dynamic + correlation pipeline, asserting `DYNAMICALLY_REACHABLE` for called packages and `STATICALLY_REACHABLE` for the negative control.
+- **`tests/test_ebpf_e2e.py` — Java additions** — `TestEbpfSidecarUnit` (5 tests, no platform requirement): unit tests for `parse_output` with `java_method` parser and `build_probe_script` openat fallback when no libjvm is present; `TestJavaEbpfE2E` (4 tests, Linux + bpftrace + Docker): full eBPF sidecar E2E for the Java lab; `TestEbpfProbeSelection.test_java_probe_selection_does_not_raise` (Linux-only): verifies probe router does not raise for Java PIDs.
+
+### Fixed
+
+#### Java E2E Lab — App.java Bugs (found by Schemathesis)
+- **Non-GET methods returned 200** — Added `allowOnly()` helper that sends `405 Method Not Allowed` with an `Allow: GET` header (RFC 9110 compliant) for any non-GET request. Previously TRACE/POST/etc. returned 200.
+- **`jsonEscape()` incomplete** — Only escaped `"` and `\`; control characters below `0x20` (except `\n`, `\r`, `\t`) were emitted raw, producing invalid JSON. Fixed to escape all `< 0x20` characters as `\uXXXX`.
+- **`/yaml` crashed on binary input** — `yaml.load()` was not wrapped; malformed or binary query strings caused the JVM handler to drop the TCP connection silently. Wrapped in try-catch; on exception returns `{"parsed":"error: ExceptionClassName"}` with HTTP 200 so eBPF probe still fires and Schemathesis does not flag schema-compliant inputs as rejected.
+- **`queryParam()` double-decode crash** — `URI.getQuery()` pre-decodes percent-encoded characters (e.g. `%25` → `%`), then `URLDecoder.decode("%", UTF_8)` threw `IllegalArgumentException` on the incomplete escape sequence. Fixed by switching to `URI.getRawQuery()` so decoding happens exactly once.
+
+---
+
 ## [Unreleased] — 2026-04-16
 
 ### Added

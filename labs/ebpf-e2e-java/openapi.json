@@ -1,0 +1,125 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "VulnReach Java E2E Target",
+    "description": "Controlled vulnerability exposure for E2E testing. Vulnerable packages: log4j-core 2.14.1 (CVE-2021-44228), commons-text 1.9 (CVE-2022-42889), snakeyaml 1.30 (CVE-2022-1471).",
+    "version": "1.0.0"
+  },
+  "servers": [
+    { "url": "http://localhost:5002" }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health check",
+        "description": "Returns ok. Does not call any vulnerable library.",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/StatusOk" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/log": {
+      "get": {
+        "summary": "Log a message via log4j",
+        "description": "Calls logger.info() — exercises log4j-core (CVE-2021-44228).",
+        "operationId": "log",
+        "responses": {
+          "200": {
+            "description": "Message logged",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/LoggedTrue" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/substitute": {
+      "get": {
+        "summary": "Interpolate a string via StringSubstitutor",
+        "description": "Calls StringSubstitutor.replace() — exercises commons-text (CVE-2022-42889).",
+        "operationId": "substitute",
+        "parameters": [
+          {
+            "name": "input",
+            "in": "query",
+            "required": false,
+            "description": "String to interpolate. Default: 'Hello ${name}'",
+            "schema": { "type": "string", "default": "Hello ${name}" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Interpolated result",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SubstituteResult" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yaml": {
+      "get": {
+        "summary": "Parse a YAML string",
+        "description": "Calls new Yaml().load() — exercises snakeyaml (CVE-2022-1471).",
+        "operationId": "yaml",
+        "parameters": [
+          {
+            "name": "data",
+            "in": "query",
+            "required": false,
+            "description": "YAML string to parse. Default: 'key: value'",
+            "schema": { "type": "string", "default": "key: value" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Parsed YAML as string",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/YamlResult" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/nolog": {
+      "get": {
+        "summary": "Negative control — no library calls",
+        "description": "All three packages are imported but none are called. Use to verify negative-control verdicts.",
+        "operationId": "nolog",
+        "responses": {
+          "200": {
+            "description": "No library was called",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CalledFalse" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "StatusOk":       { "type": "object", "properties": { "status":  { "type": "string", "example": "ok"      } } },
+      "LoggedTrue":     { "type": "object", "properties": { "logged":  { "type": "boolean", "example": true     } } },
+      "SubstituteResult": { "type": "object", "properties": { "result": { "type": "string", "example": "Hello VulnReach" } } },
+      "YamlResult":     { "type": "object", "properties": { "parsed": { "type": "string", "example": "{greeting=hello}" } } },
+      "CalledFalse":    { "type": "object", "properties": { "called":  { "type": "boolean", "example": false    } } }
+    }
+  }
+}

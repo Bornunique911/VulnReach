@@ -123,6 +123,8 @@ For repos with a `Dockerfile` or `docker-compose.yml`:
 
 Supports **eBPF non-invasive tracing** (bpftrace / bcc, `openat` syscalls or USDT probes) as an alternative to coverage.py patching — no Dockerfile modification required.
 
+**Java eBPF coverage** (`hotspot:method__entry` USDT): when the target JVM is started with `-XX:+ExtendedDTraceProbes`, the sidecar attaches via `usdt:{libjvm}:hotspot:method__entry` and records every Java method call as `method:{class_slash}:{method_name}`. The `java_method` parser converts this into `NormalisedCoverage` keyed by `class/Foo.java`, which flows through the same correlation engine as Python coverage — a Java CVE can reach `DYNAMICALLY_REACHABLE` when the vulnerable method is observed at runtime. Maven coordinate names (e.g. `org.apache.logging.log4j:log4j-core`) are resolved to coverage paths via group-path and artifact keyword extraction.
+
 ### 4.5 Intelligent DAST
 
 An LLM-steered exploit confirmation loop:
@@ -502,7 +504,7 @@ Each finding in the API response carries:
 | Dynamic traffic testing | No | No | No | No | ✅ (schemathesis) |
 | Self-hostable | Partial | ✅ | No | No | ✅ (full) |
 | Local LLM support | No | No | No | No | ✅ (Ollama) |
-| Language support | Multi | Multi | Multi | Multi | Python (v1) |
+| Language support | Multi | Multi | Multi | Multi | Python (full) + Java (eBPF runtime) |
 | CI gate mechanism | PR status | `--error` flag | SARIF upload | Policy | `policy.block_if` + scan status |
 | False positive strategy | CVSS filter | Rule precision | Query precision | Call-graph pruning | 5-link evidence chain |
 
@@ -517,7 +519,7 @@ Each finding in the API response carries:
 
 ### Where VulnReach is currently weaker
 
-1. Python-only (Endor Labs supports Java, Go, JS, Rust, Python)
+1. Taint-flow is Python-only; Java has call graph + eBPF runtime confirmation but no source-to-sink tracing (Endor Labs supports Java, Go, JS, Rust, Python with full call graphs)
 2. Requires Docker for dynamic analysis (not available in all CI environments)
 3. `tainter` CLI is a hard external dependency
 4. No SBOM export in standardized format (CycloneDX / SPDX)

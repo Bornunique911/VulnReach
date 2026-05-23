@@ -302,6 +302,293 @@ class TestEbpfSidecarE2E:
         )
 
 
+# ── Java E2E ──────────────────────────────────────────────────────────────────
+
+JAVA_LAB_DIR = Path(__file__).parent.parent / "labs" / "ebpf-e2e-java"
+JAVA_TARGET_PORT = 5002
+JAVA_TARGET_URL = f"http://localhost:{JAVA_TARGET_PORT}"
+
+_JAVA_VULNS: List[Dict[str, Any]] = [
+    {
+        # log4j-core IS called at runtime via /log
+        "package": "org.apache.logging.log4j:log4j-core",
+        "cve_id": ["CVE-2021-44228"],
+        "severity": "CRITICAL",
+        "version": "2.14.1",
+        "fix_version": "2.17.1",
+    },
+]
+
+
+def _wait_for_java_target(timeout: int = 60) -> bool:
+    """Poll until the Java target app responds on /health."""
+    import urllib.request
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            urllib.request.urlopen(f"{JAVA_TARGET_URL}/health", timeout=2)
+            return True
+        except Exception:
+            time.sleep(2)
+    return False
+
+
+@pytest.fixture(scope="module")
+def java_ebpf_target():
+    """Start the ebpf-e2e-java target via docker compose and tear it down after."""
+    subprocess.run(
+        ["docker", "compose", "up", "-d", "--build"],
+        cwd=JAVA_LAB_DIR,
+        check=True,
+        capture_output=True,
+    )
+    ready = _wait_for_java_target(timeout=120)
+    if not ready:
+        subprocess.run(["docker", "compose", "down", "--remove-orphans"], cwd=JAVA_LAB_DIR)
+        pytest.fail("Java target app did not become healthy within 120s")
+
+    yield JAVA_TARGET_URL
+
+    subprocess.run(
+        ["docker", "compose", "down", "--remove-orphans"],
+        cwd=JAVA_LAB_DIR,
+        capture_output=True,
+    )
+
+
+def _build_java_scan_config(compose_path: str, target_service: str = "target") -> Any:
+    """Build a minimal ScanConfig with eBPF sidecar mode enabled for Java."""
+    from config.schema import (
+        EbpfSettings,
+        IntelligentDastSettings,
+        OpenAPIGeneratorSettings,
+        PolicySettings,
+        RiskSettings,
+        RuntimeSettings,
+        ScanConfig,
+        ScanSettings,
+    )
+
+    return ScanConfig(
+        scan=ScanSettings(
+            tools=["dynamic_reachability"],
+            runtime=RuntimeSettings(
+                enabled=True,
+                timeout=180,
+                coverage_wait=30,
+                container_port=JAVA_TARGET_PORT,
+                ebpf=EbpfSettings(
+                    enabled=True,
+                    mode="usdt",
+                    sidecar_mode=True,
+                    language="java",
+                ),
+            ),
+            openapi_generator=OpenAPIGeneratorSettings(enabled=False),
+            intelligent_dast=IntelligentDastSettings(enabled=False),
+        ),
+        risk=RiskSettings(exposure="public", data_sensitivity="high"),
+        policy=PolicySettings(block_if=[]),
+    )
+
+
+@requires_ebpf
+class TestJavaEbpfE2E:
+    """Full pipeline tests for Java using the eBPF sidecar (hotspot:method__entry USDT)."""
+
+    def test_target_is_healthy(self, java_ebpf_target):
+        """Sanity check — Java target app responds before we start tracing."""
+        import urllib.request
+        resp = urllib.request.urlopen(f"{java_ebpf_target}/health", timeout=5)
+        assert resp.status == 200
+
+    def test_log4j_is_dynamically_reachable(self, java_ebpf_target):
+        """log4j is called on every /log request — must be DYNAMICALLY_REACHABLE."""
+        from agents.agent_dynamic_reachability import DynamicReachabilityAgent
+        from core.models import ScanContext
+        from correlation.service import CorrelationService
+
+        compose_path = str(JAVA_LAB_DIR / "docker-compose.yml")
+        config = _build_java_scan_config(compose_path, target_service="target")
+
+        context = ScanContext(
+            repo_path=str(JAVA_LAB_DIR / "target"),
+            scan_id="ebpf-e2e-java-log4j",
+            config=config,
+            vulnerabilities=_JAVA_VULNS,
+        )
+
+        agent = DynamicReachabilityAgent()
+        result = asyncio.get_event_loop().run_until_complete(agent.run(context))
+
+        assert result is not None, "Agent returned no result"
+        assert result.metadata.get("mode") in ("ebpf_sidecar", "ebpf"), (
+            f"Expected eBPF mode, got: {result.metadata.get('mode')}"
+        )
+
+        svc = CorrelationService()
+        corr = svc.correlate(
+            vulnerabilities=_JAVA_VULNS,
+            static_reachability={},
+            dynamic_reachability={
+                (f["package"].lower(), cve): f
+                for f in result.findings
+                for cve in (
+                    [f["cve_id"]] if isinstance(f.get("cve_id"), str) else (f.get("cve_id") or [])
+                )
+            },
+            exposure="public",
+        )
+
+        log4j_class = _get_reachability_class(corr["correlation"], "CVE-2021-44228")
+        assert log4j_class == "DYNAMICALLY_REACHABLE", (
+            f"log4j CVE-2021-44228 expected DYNAMICALLY_REACHABLE, got {log4j_class}. "
+            f"eBPF metadata: {result.metadata.get('ebpf', {})}"
+        )
+
+    def test_log4j_not_reachable_if_unused(self, java_ebpf_target):
+        """Hitting /nolog only must not make log4j DYNAMICALLY_REACHABLE."""
+        from agents.agent_dynamic_reachability import DynamicReachabilityAgent
+        from core.models import ScanContext
+        from correlation.service import CorrelationService
+
+        # Drive traffic only to /nolog — log4j methods must not appear in eBPF output
+        import urllib.request
+        urllib.request.urlopen(f"{java_ebpf_target}/nolog", timeout=5)
+
+        compose_path = str(JAVA_LAB_DIR / "docker-compose.yml")
+        config = _build_java_scan_config(compose_path, target_service="target")
+
+        context = ScanContext(
+            repo_path=str(JAVA_LAB_DIR / "target"),
+            scan_id="ebpf-e2e-java-nolog",
+            config=config,
+            vulnerabilities=_JAVA_VULNS,
+        )
+
+        agent = DynamicReachabilityAgent()
+        result = asyncio.get_event_loop().run_until_complete(agent.run(context))
+
+        svc = CorrelationService()
+        corr = svc.correlate(
+            vulnerabilities=_JAVA_VULNS,
+            static_reachability={},
+            dynamic_reachability={
+                (f["package"].lower(), cve): f
+                for f in result.findings
+                for cve in (
+                    [f["cve_id"]] if isinstance(f.get("cve_id"), str) else (f.get("cve_id") or [])
+                )
+            },
+            exposure="public",
+        )
+
+        log4j_class = _get_reachability_class(corr["correlation"], "CVE-2021-44228")
+        assert log4j_class != "DYNAMICALLY_REACHABLE", (
+            f"log4j should not be DYNAMICALLY_REACHABLE when /nolog-only traffic — "
+            f"got {log4j_class}"
+        )
+
+    def test_java_probe_metadata(self, java_ebpf_target):
+        """Agent result must report runtime=java and at least one traced file."""
+        from agents.agent_dynamic_reachability import DynamicReachabilityAgent
+        from core.models import ScanContext
+
+        compose_path = str(JAVA_LAB_DIR / "docker-compose.yml")
+        config = _build_java_scan_config(compose_path, target_service="target")
+
+        context = ScanContext(
+            repo_path=str(JAVA_LAB_DIR / "target"),
+            scan_id="ebpf-e2e-java-meta",
+            config=config,
+            vulnerabilities=_JAVA_VULNS,
+        )
+
+        agent = DynamicReachabilityAgent()
+        result = asyncio.get_event_loop().run_until_complete(agent.run(context))
+
+        ebpf_meta = result.metadata.get("ebpf", {})
+        assert ebpf_meta.get("runtime") == "java", (
+            f"Expected runtime=java, got: {ebpf_meta}"
+        )
+        assert ebpf_meta.get("file_count", 0) > 0, (
+            f"Expected at least one file traced, got file_count=0. "
+            f"Full metadata: {result.metadata}"
+        )
+
+
+# ── Sidecar unit tests (no Linux / Docker / bpftrace required) ────────────────
+
+class TestEbpfSidecarUnit:
+    """Pure-Python unit tests for sidecar_entrypoint parsing logic.
+
+    These run on any platform — no kernel, bpftrace, or Docker needed.
+    """
+
+    def test_parse_java_method_basic(self):
+        """java_method parser extracts class/method pairs from raw bpftrace output."""
+        from agents.ebpf.sidecar.sidecar_entrypoint import parse_output
+
+        raw = "\n".join([
+            "Attaching 1 probe...",
+            "method:com/example/App:main",
+            "method:org/apache/logging/log4j/core/Logger:info",
+            "method:com/example/App:main",   # duplicate — must be deduped
+            "method:java/lang/String:equals",
+            "",
+        ])
+        result = parse_output(raw, "java_method", "java")
+
+        assert result["runtime"] == "java"
+        files = result["files"]
+
+        assert "com/example/App.java" in files
+        assert "main" in files["com/example/App.java"]["executed_functions"]
+
+        assert "org/apache/logging/log4j/core/Logger.java" in files
+        assert "info" in files["org/apache/logging/log4j/core/Logger.java"]["executed_functions"]
+
+        # Duplicate method entries must not appear twice
+        assert files["com/example/App.java"]["executed_functions"].count("main") == 1
+
+    def test_parse_java_method_empty_output(self):
+        """java_method parser handles zero events gracefully (e.g. USDT not firing)."""
+        from agents.ebpf.sidecar.sidecar_entrypoint import parse_output
+
+        result = parse_output("Attaching 1 probe...\n", "java_method", "java")
+        assert result["runtime"] == "java"
+        assert result["files"] == {}
+
+    def test_parse_java_method_ignores_noise(self):
+        """java_method parser skips unrecognised lines without raising."""
+        from agents.ebpf.sidecar.sidecar_entrypoint import parse_output
+
+        raw = "some random\nbpftrace noise\nmethod:com/example/Foo:bar\n"
+        result = parse_output(raw, "java_method", "java")
+        assert "com/example/Foo.java" in result["files"]
+        assert "bar" in result["files"]["com/example/Foo.java"]["executed_functions"]
+
+    def test_java_build_probe_falls_back_to_openat_when_no_libjvm(self, monkeypatch):
+        """When _find_libjvm returns None, build_probe_script must degrade to openat."""
+        import agents.ebpf.sidecar.sidecar_entrypoint as se
+        monkeypatch.setattr(se, "_find_libjvm", lambda pid: None)
+
+        script, parser = se.build_probe_script(pid=1, runtime="java")
+        assert parser == "openat"
+        assert "openat" in script
+
+    def test_python_line_parser_unchanged(self):
+        """Regression: python_line parser still works after Java additions."""
+        from agents.ebpf.sidecar.sidecar_entrypoint import parse_output
+
+        raw = "line:/app/views.py:42\nline:/app/views.py:43\nline:/app/models.py:10\n"
+        result = parse_output(raw, "python_line", "python")
+        assert result["runtime"] == "python"
+        assert 42 in result["files"]["/app/views.py"]["executed_lines"]
+        assert 10 in result["files"]["/app/models.py"]["executed_lines"]
+
+
 @pytest.mark.skipif(
     platform.system() != "Linux",
     reason="probe_router uses /proc — Linux only",
@@ -324,3 +611,12 @@ class TestEbpfProbeSelection:
         probe = select_probe(runtime="generic", pid=1)
         assert not probe.skip, f"openat fallback skipped: {probe.skip_reason}"
         assert "openat" in probe.bpftrace_script
+
+    def test_java_probe_selection_does_not_raise(self):
+        """probe_router must not raise for Java PIDs — returns a config with a script."""
+        from agents.ebpf.probe_router import select_probe
+        # PID 1 is always present; likely not a JVM, so expect skip or openat fallback
+        probe = select_probe(runtime="java", pid=1)
+        # Either a usdt_method probe was found, or it gracefully skipped/degraded
+        if not probe.skip:
+            assert probe.bpftrace_script, "Non-skip Java probe must include a bpftrace script"
