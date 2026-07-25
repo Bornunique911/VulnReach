@@ -2,8 +2,11 @@
 
 **Runtime-aware SCA — proves which CVEs are actually reachable, not just installed.**
 
+[![OWASP Project](https://img.shields.io/badge/OWASP-Project-blue.svg)](https://www.owasp.community/projects/vulnreach)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+
+> **VulnReach is now an official [OWASP Project](https://www.owasp.community/projects/vulnreach).** 🎉
 
 ## Demo
 
@@ -45,7 +48,7 @@ VulnReach builds on standard SCA output by adding reachability context — provi
   - dynamic scans require explicit opt-in via `VULNREACH_ALLOW_DOCKER_DAEMON=true`
   - runtime profile uses restricted `docker-socket-proxy`
 - Deterministic fixture quality gates for Java/JavaScript/Go in CI
-- OWASP Incubator application submitted
+- **Accepted as an official OWASP Project** — [owasp.community/projects/vulnreach](https://www.owasp.community/projects/vulnreach)
 - **AI next-steps endpoint** — `POST /findings/{id}/next-steps` produces analyst-facing remediation guidance (immediate actions, validation probes, upgrade paths, monitoring) for a deterministic finding. Lazy / on-demand: scans never call the LLM, and LLM failures degrade gracefully. The deterministic verdict is read-only. See [docs/api.md](docs/api.md#post-findingsfinding_idnext-steps).
 
 ### Experimental
@@ -184,14 +187,14 @@ Full methodology, evidence chain detail, and package-level breakdown: [docs/benc
 
 - [docs/architecture.md](docs/architecture.md) — pipeline design and execution model
 - [docs/threat-model.md](docs/threat-model.md) — trust boundaries, STRIDE, abuse cases
-- [docs/incubator-readiness.md](docs/incubator-readiness.md) — OSS/incubator application readiness status
+- [docs/incubator-readiness.md](docs/incubator-readiness.md) — OSS/OWASP readiness status
 - [docs/DAST.md](docs/DAST.md) — DAST concepts and flow
 
 ### Contributors
 
 - [ROADMAP.md](ROADMAP.md) — planned features, known limitations, language support status
 - [docs/development.md](docs/development.md) — internals, agents, storage, extension points
-- [OWASP.md](OWASP.md) — OWASP incubator application notes
+- [OWASP.md](OWASP.md) — OWASP project notes
 - [SECURITY.md](SECURITY.md) — vulnerability disclosure and key rotation
 - [CONTRIBUTING.md](CONTRIBUTING.md) — contribution process
 - [CHANGELOG.md](CHANGELOG.md) — release history

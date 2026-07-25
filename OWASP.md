@@ -1,6 +1,6 @@
-# VulnReach — OWASP Incubator Application Notes
+# VulnReach — OWASP Project Notes
 
-VulnReach is preparing an application for the [OWASP Incubator](https://owasp.org/projects/) and aligns with relevant OWASP guidance (for example [SCVS](https://owasp.org/www-project-software-component-verification-standard/)).
+VulnReach is an official [OWASP Project](https://www.owasp.community/projects/vulnreach) and aligns with relevant OWASP guidance (for example [SCVS](https://owasp.org/www-project-software-component-verification-standard/)).
 
 ---
 
