@@ -27,7 +27,7 @@ jobs:
 
   # ── Unit tests + coverage gate ────────────────────────────────────────────
   test:
-    name: Unit tests (coverage ≥ 60%)
+    name: Core unit tests (coverage ≥ 60%)
     runs-on: ubuntu-latest
 
     services:
@@ -67,7 +67,7 @@ jobs:
       - name: Run unit + integration tests with coverage
         run: |
           pytest tests/ \
-            --cov=. \
+            --cov \
             --cov-report=term-missing \
             --cov-fail-under=60 \
             -v
